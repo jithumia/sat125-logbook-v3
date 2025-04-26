@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500">
+  <rect width="500" height="500" fill="#4CAF50"/>
+  <g transform="translate(100, 100)">
+    <path d="M 50,50 C 100,50 150,100 200,100" stroke="#FFFFFF" stroke-width="40" fill="none" stroke-linecap="round"/>
+    <text x="50" y="250" font-family="Arial" font-size="220" fill="#FFFFFF" font-style="italic" font-weight="bold">iba</text>
+  </g>
+</svg>
