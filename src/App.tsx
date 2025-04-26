@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { BellRing, LogOut, Mail, Search, Calendar, X, RotateCcw, Send } from 'lucide-react';
+import { BellRing, LogOut, Mail, Search, Calendar, X, RotateCcw, Send, Filter, ClipboardList, History, Settings } from 'lucide-react';
 import { Auth } from '@supabase/auth-ui-react';
 import { ThemeSupa } from '@supabase/auth-ui-shared';
 import LogEntryForm from './components/LogEntryForm';
@@ -8,12 +8,17 @@ import ShiftSelector from './components/ShiftSelector';
 import StartShiftModal from './components/StartShiftModal';
 import EndShiftModal from './components/EndShiftModal';
 import ShiftReportModal from './components/ShiftReportModal';
-import { ActiveShift, ShiftType, SearchFilters } from './types';
+import LoadingSpinner from './components/LoadingSpinner';
+import ErrorMessage from './components/ErrorMessage';
+import AdvancedSearch from './components/AdvancedSearch';
+import QuickEntry from './components/QuickEntry';
+import { ActiveShift, ShiftType, SearchFilters, LogEntry } from './types';
 import { supabase } from './lib/supabase';
 import toast from 'react-hot-toast';
+import { Session } from '@supabase/supabase-js';
 
 function App() {
-  const [session, setSession] = useState(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [currentShift, setCurrentShift] = useState<ShiftType | undefined>(undefined);
   const [showForm, setShowForm] = useState(false);
   const [showStartShift, setShowStartShift] = useState(false);
@@ -23,11 +28,14 @@ function App() {
   const [activeShift, setActiveShift] = useState<ActiveShift | null>(null);
   const [loading, setLoading] = useState(true);
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [searchFilters, setSearchFilters] = useState<SearchFilters>({
     startDate: '',
     endDate: '',
     keyword: '',
   });
+  const [recentLogs, setRecentLogs] = useState<LogEntry[]>([]);
+  const [previousShift, setPreviousShift] = useState<ActiveShift | null>(null);
 
   const resetSearchFilters = () => {
     setSearchFilters({
@@ -77,6 +85,30 @@ function App() {
     return () => {
       mounted = false;
       subscription?.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    fetchRecentLogs();
+
+    // Subscribe to real-time changes in log_entries
+    const logChannel = supabase.channel('log_entries_changes');
+    const logSubscription = logChannel
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'log_entries'
+        },
+        async (payload) => {
+          await fetchRecentLogs();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      logChannel.unsubscribe();
     };
   }, []);
 
@@ -144,19 +176,36 @@ function App() {
     setShowForm(true);
   };
 
+  const fetchRecentLogs = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('log_entries')
+        .select('*')
+        .in('category', ['error', 'downtime'])
+        .order('created_at', { ascending: false })
+        .limit(2);
+
+      if (error) throw error;
+      setRecentLogs(data || []);
+    } catch (error) {
+      console.error('Error fetching recent logs:', error);
+      toast.error('Failed to fetch recent logs');
+    }
+  };
+
   if (!session) {
     return (
-      <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-blue-900 to-blue-800 flex items-center justify-center p-4">
         <div className="max-w-md w-full">
           <div className="flex items-center justify-center mb-8">
             <img 
               src="/iba-logo.svg" 
               alt="IBA Logo" 
-              className="h-12 w-12"
+              className="h-16 w-16"
             />
-            <h1 className="text-3xl font-bold text-white ml-3">SAT.125 Logbook</h1>
+            <h1 className="text-4xl font-bold text-white ml-4">SAT.125 Logbook</h1>
           </div>
-          <div className="bg-gray-800 p-8 rounded-lg shadow-xl border border-gray-700">
+          <div className="bg-white/10 backdrop-blur-lg p-8 rounded-2xl shadow-2xl border border-white/20">
             <Auth
               supabaseClient={supabase}
               appearance={{ 
@@ -164,13 +213,13 @@ function App() {
                 variables: {
                   default: {
                     colors: {
-                      brand: '#3b82f6',
-                      brandAccent: '#2563eb',
-                      inputBackground: '#1f2937',
+                      brand: '#4F46E5',
+                      brandAccent: '#4338CA',
+                      inputBackground: 'rgba(255, 255, 255, 0.1)',
                       inputText: 'white',
-                      inputBorder: '#374151',
-                      inputBorderHover: '#4b5563',
-                      inputBorderFocus: '#3b82f6',
+                      inputBorder: 'rgba(255, 255, 255, 0.2)',
+                      inputBorderHover: 'rgba(255, 255, 255, 0.3)',
+                      inputBorderFocus: '#4F46E5',
                     },
                   },
                 },
@@ -190,245 +239,281 @@ function App() {
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
-          <p className="mt-4 text-gray-400">Loading...</p>
-        </div>
+        <LoadingSpinner size="lg" text="Loading application..." />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-900">
-      {/* Header */}
-      <header className="bg-gray-800 border-b border-gray-700">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center space-x-3">
-              <img 
-                src="/iba-logo.svg" 
-                alt="IBA Logo" 
-                className="h-8 w-8"
-              />
-              <h1 className="text-2xl font-bold text-white">SAT.125 Logbook</h1>
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-indigo-900">
+      {/* Main Content Layout */}
+      <div className={`${isSidebarOpen ? 'ml-64' : 'ml-16'} transition-all duration-300 ease-in-out min-h-screen flex flex-col`}>
+        {/* Top Section: Active Shift and Critical Events in a row */}
+        {!showAllLogs && (
+          <div className="flex gap-4 p-2">
+            {/* Active Shift */}
+            <div className="flex-1">
+              <div className="bg-white/10 backdrop-blur-lg rounded-lg border border-white/20 p-3">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-lg font-semibold text-white">Active Shift</h3>
+                      {activeShift && (
+                        <span className="text-sm text-indigo-400">
+                          ({activeShift.shift_type.charAt(0).toUpperCase() + activeShift.shift_type.slice(1)} Shift)
+                        </span>
+                      )}
+                      {activeShift && (
+              <button
+                          onClick={handleEndShift}
+                          className="px-2 py-0.5 bg-red-600 text-white text-sm rounded hover:bg-red-700 transition-colors"
+              >
+                          End Shift
+              </button>
+                      )}
+                    </div>
+                    {activeShift ? (
+                      <div className="text-xs text-gray-300 mt-1">
+                        <span className="mr-3">Started: {new Date(activeShift.started_at).toLocaleString()}</span>
+                        <span>Engineers: {activeShift.engineers?.map(e => e.engineer.name).join(', ')}</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-sm text-gray-300">Start a new shift to begin logging entries</span>
+              <button
+                          onClick={handleStartShift}
+                          className="px-2 py-0.5 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700 transition-colors"
+                        >
+                          Start Shift
+              </button>
             </div>
-            <div className="flex items-center space-x-4">
-              <button
-                onClick={() => {/* TODO: Implement notifications */}}
-                className="text-gray-400 hover:text-white transition-colors"
-              >
-                <BellRing className="h-6 w-6" />
-              </button>
-              <button
-                onClick={() => {/* TODO: Implement email */}}
-                className="text-gray-400 hover:text-white transition-colors"
-              >
-                <Mail className="h-6 w-6" />
-              </button>
-              <button
-                onClick={handleSignOut}
-                className="text-gray-400 hover:text-white transition-colors"
-              >
-                <LogOut className="h-6 w-6" />
-              </button>
-            </div>
+                    )}
           </div>
         </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="container mx-auto px-4 py-6">
-        {/* Active Shift Status */}
         {activeShift && (
-          <div className="mb-6 bg-blue-900/50 border border-blue-700 rounded-lg p-4">
-            <h2 className="text-lg font-semibold text-blue-200 mb-2">
-              Active Shift: {activeShift.shift_type.charAt(0).toUpperCase() + activeShift.shift_type.slice(1)}
-            </h2>
-            <div className="space-y-2">
-              <p className="text-blue-300">
-                Started at: {new Date(activeShift.started_at).toLocaleString()}
-              </p>
-              <p className="text-blue-300">
-                SF#: {activeShift.salesforce_number}
-              </p>
-              <div className="text-blue-300">
-                <span className="font-medium">Engineers: </span>
-                {activeShift.engineers?.map(engineer => engineer.engineer.name).join(', ') || 'No engineers assigned'}
+                  <div className="mt-2">
+                    <QuickEntry 
+                      activeShift={activeShift} 
+                      onEntryAdded={fetchRecentLogs} 
+                      onFullFormClick={() => setShowForm(true)}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Critical Events */}
+            <div className="w-80">
+              <div className="bg-white/10 backdrop-blur-lg rounded-lg border border-white/20 p-3">
+                <h3 className="text-lg font-semibold text-white mb-2">Critical Events</h3>
+                <div className="space-y-1">
+                  {recentLogs.length > 0 ? (
+                    recentLogs.map(log => (
+                      <div 
+                        key={log.id} 
+                        className={`p-1.5 rounded ${
+                          log.category === 'error' 
+                            ? 'bg-red-900/20 border border-red-700/50' 
+                            : 'bg-yellow-900/20 border border-yellow-700/50'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className={`px-1.5 py-0.5 text-xs font-medium rounded ${
+                            log.category === 'error' 
+                              ? 'bg-red-900 text-red-200' 
+                              : 'bg-yellow-900 text-yellow-200'
+                          }`}>
+                            {log.category.toUpperCase()}
+                          </span>
+                          <span className="text-xs text-gray-400">
+                            {new Date(log.created_at).toLocaleTimeString()}
+                          </span>
+                        </div>
+                        <p className="text-xs text-white mt-1">{log.description}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-center py-1 text-gray-400 text-xs">
+                      No critical events recorded
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
         )}
 
-        {/* Controls */}
-        <div className="mb-6 space-y-4">
-          <div className="flex flex-wrap gap-4 justify-between items-center">
-            <div className="flex flex-wrap items-center gap-4">
+        {/* Main Log Table Section - Takes maximum available space */}
+        <div className={`flex-1 ${showAllLogs ? 'p-0' : 'p-2'}`} style={{ minHeight: showAllLogs ? '100vh' : 'calc(100vh - 140px)' }}>
+          <div className={`bg-white/10 backdrop-blur-lg ${showAllLogs ? '' : 'rounded-lg'} border border-white/20 h-full flex flex-col overflow-hidden`}>
+            <div className="flex justify-between items-center px-4 py-3 border-b border-white/10">
+              <div className="flex items-center gap-4">
+                <h3 className="text-lg font-semibold text-white">
+                  {showAllLogs ? 'All Logs' : 'Current Shift Logs'}
+                </h3>
+                {showAllLogs && (
               <button
-                onClick={() => setShowAllLogs(!showAllLogs)}
-                className={`px-4 py-2 rounded-md ${
-                  showAllLogs
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-700 text-gray-200 hover:bg-gray-600'
-                }`}
-              >
-                All Logs
+                    onClick={() => setShowAdvancedSearch(!showAdvancedSearch)}
+                    className="px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-white/10 rounded transition-colors flex items-center gap-1"
+                  >
+                    <Filter className="h-3 w-3" />
+                    <span>{showAdvancedSearch ? 'Hide Filters' : 'Show Filters'}</span>
               </button>
-              {!showAllLogs && (
-                <ShiftSelector currentShift={currentShift} onShiftChange={setCurrentShift} />
               )}
             </div>
-            <div className="flex flex-wrap gap-4">
+              <div className="flex items-center gap-2">
+                {!showAllLogs && (
               <button
-                onClick={handleStartShift}
-                className={`px-4 py-2 text-white rounded-md transition-colors ${
-                  activeShift
-                    ? 'bg-gray-600 cursor-not-allowed'
-                    : 'bg-green-600 hover:bg-green-700'
-                }`}
-                disabled={!!activeShift}
-              >
-                Start Shift
-              </button>
-              <button
-                onClick={handleAddEntry}
-                className={`px-4 py-2 text-white rounded-md transition-colors ${
-                  !activeShift
-                    ? 'bg-gray-600 cursor-not-allowed'
-                    : 'bg-blue-600 hover:bg-blue-700'
-                }`}
-                disabled={!activeShift}
-              >
-                Add Entry
-              </button>
-              <button
-                onClick={handleEndShift}
-                className={`px-4 py-2 text-white rounded-md transition-colors ${
-                  !activeShift
-                    ? 'bg-gray-600 cursor-not-allowed'
-                    : 'bg-red-600 hover:bg-red-700'
-                }`}
-                disabled={!activeShift}
-              >
-                End Shift
-              </button>
-              <button 
-                onClick={() => setShowReportModal(true)} 
-                className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors flex items-center space-x-2"
-              >
-                <Send className="h-4 w-4" />
-                <span>Send Report</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Search Bar */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
-                <input
-                  type="text"
-                  placeholder="Search logs..."
-                  value={searchFilters.keyword}
-                  onChange={(e) => setSearchFilters(prev => ({ ...prev, keyword: e.target.value }))}
-                  className="w-full pl-10 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-md text-white placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-              <button
-                onClick={() => setShowAdvancedSearch(!showAdvancedSearch)}
-                className={`px-4 py-2 rounded-md ${
-                  showAdvancedSearch
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-700 text-gray-200 hover:bg-gray-600'
-                }`}
-              >
-                <Calendar className="h-5 w-5" />
-              </button>
-              <button
-                onClick={resetSearchFilters}
-                className="px-4 py-2 bg-gray-700 text-gray-200 hover:bg-gray-600 rounded-md flex items-center space-x-2"
-                title="Reset search filters"
-              >
-                <RotateCcw className="h-5 w-5" />
-              </button>
-            </div>
-
-            {showAdvancedSearch && (
-              <div className="bg-gray-800 p-4 rounded-md border border-gray-700 space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-white font-medium">Date Range</h3>
-                  <button
-                    onClick={() => setShowAdvancedSearch(false)}
-                    className="text-gray-400 hover:text-white"
+                    onClick={() => {
+                      setShowAllLogs(true);
+                      resetSearchFilters();
+                    }}
+                    className="px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-white/10 rounded transition-colors flex items-center gap-1"
                   >
-                    <X className="h-5 w-5" />
-                  </button>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1">
-                      Start Date
-                    </label>
-                    <input
-                      type="datetime-local"
-                      value={searchFilters.startDate}
-                      onChange={(e) => setSearchFilters(prev => ({ ...prev, startDate: e.target.value }))}
-                      className="w-full bg-gray-700 border border-gray-600 rounded-md text-white px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1">
-                      End Date
-                    </label>
-                    <input
-                      type="datetime-local"
-                      value={searchFilters.endDate}
-                      onChange={(e) => setSearchFilters(prev => ({ ...prev, endDate: e.target.value }))}
-                      className="w-full bg-gray-700 border border-gray-600 rounded-md text-white px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    />
-                  </div>
+                    <History className="h-3 w-3" />
+                    <span>View All Logs</span>
+              </button>
+                )}
+              <button
+                  onClick={() => {/* TODO: Export functionality */}}
+                  className="px-2 py-1 text-xs bg-gray-700 text-white rounded hover:bg-gray-600 transition-colors"
+                >
+                  Export All Logs
+              </button>
+              </div>
+            </div>
+
+            {/* Advanced Search Section */}
+            {showAllLogs && showAdvancedSearch && (
+              <div className="border-b border-white/10 bg-white/5">
+                <div className="p-3">
+                  <AdvancedSearch
+                    filters={searchFilters}
+                    onFiltersChange={setSearchFilters}
+                    onReset={resetSearchFilters}
+                  />
                 </div>
               </div>
             )}
+
+            <div className="flex-1">
+              <LogTable
+                showAllLogs={showAllLogs}
+                searchFilters={searchFilters}
+                activeShift={activeShift}
+              />
+            </div>
           </div>
         </div>
+      </div>
 
-        {/* Log Table */}
-        <LogTable 
-          shift={showAllLogs ? undefined : currentShift} 
-          searchFilters={searchFilters}
-          onShiftChange={fetchActiveShift}
-        />
+      {/* Navigation Sidebar */}
+      <div 
+        className={`fixed left-0 top-0 bottom-0 ${
+          isSidebarOpen ? 'w-64' : 'w-16'
+        } bg-white/10 backdrop-blur-lg border-r border-white/10 transition-all duration-300 ease-in-out z-50`}
+      >
+        <div className="p-4">
+          <div className={`flex items-center ${isSidebarOpen ? 'justify-between' : 'justify-center'} mb-8`}>
+            <div className="flex items-center space-x-3">
+              <img src="/iba-logo.svg" alt="IBA Logo" className="h-8 w-8" />
+              {isSidebarOpen && <h1 className="text-lg font-bold text-white">SAT.125</h1>}
+            </div>
+            <button
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+              className="text-gray-300 hover:text-white transition-colors"
+              title={isSidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+            >
+              {isSidebarOpen ? (
+                <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+                </svg>
+              ) : (
+                <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                </svg>
+              )}
+            </button>
+          </div>
+
+          <nav className="space-y-2">
+            <button 
+              onClick={() => {
+                setShowAllLogs(false);
+                resetSearchFilters();
+              }}
+              className={`w-full flex items-center ${
+                isSidebarOpen ? 'px-4' : 'justify-center'
+              } py-3 rounded-lg transition-colors group relative ${
+                !showAllLogs 
+                  ? 'bg-indigo-600 text-white' 
+                  : 'text-gray-300 hover:bg-white/10'
+              }`}
+              title={isSidebarOpen ? '' : 'Current Shift'}
+            >
+              <ClipboardList className="h-5 w-5" />
+              {isSidebarOpen ? (
+                <span className="ml-3">Current Shift</span>
+              ) : (
+                <span className="absolute left-16 bg-gray-800 text-white px-2 py-1 rounded text-sm opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
+                  Current Shift
+                </span>
+              )}
+            </button>
+            
+            <button 
+              onClick={() => {
+                setShowAllLogs(true);
+                resetSearchFilters();
+              }}
+              className={`w-full flex items-center ${
+                isSidebarOpen ? 'px-4' : 'justify-center'
+              } py-3 rounded-lg transition-colors group relative ${
+                showAllLogs 
+                  ? 'bg-indigo-600 text-white' 
+                  : 'text-gray-300 hover:bg-white/10'
+              }`}
+              title={isSidebarOpen ? '' : 'All Logs'}
+            >
+              <History className="h-5 w-5" />
+              {isSidebarOpen ? (
+                <span className="ml-3">All Logs</span>
+              ) : (
+                <span className="absolute left-16 bg-gray-800 text-white px-2 py-1 rounded text-sm opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50">
+                  All Logs
+                </span>
+              )}
+            </button>
+          </nav>
+        </div>
+      </div>
 
         {/* Modals */}
         {showForm && (
-          <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
-            <div className="bg-gray-800 rounded-lg p-6 w-full max-w-2xl mx-4">
-              <LogEntryForm onClose={() => setShowForm(false)} shift={currentShift!} />
-            </div>
-          </div>
+      <LogEntryForm
+        onClose={() => setShowForm(false)}
+        activeShift={activeShift}
+      />
         )}
-
         {showStartShift && (
           <StartShiftModal 
             onClose={() => setShowStartShift(false)} 
-            onShiftStarted={fetchActiveShift}
+        onSuccess={fetchActiveShift}
           />
         )}
-
-        {showEndShift && currentShift && (
+    {showEndShift && (
           <EndShiftModal 
             onClose={() => setShowEndShift(false)} 
-            currentShift={currentShift}
-            onShiftEnded={fetchActiveShift}
+        onSuccess={fetchActiveShift}
+        activeShift={activeShift}
           />
         )}
-
-        {/* Shift Report Modal */}
         {showReportModal && (
-          <ShiftReportModal onClose={() => setShowReportModal(false)} />
+    <ShiftReportModal
+      onClose={() => setShowReportModal(false)}
+      activeShift={activeShift}
+    />
         )}
-      </main>
     </div>
   );
 }

@@ -1,22 +1,47 @@
 import React, { useEffect, useState } from 'react';
-import { Edit2, Trash2, Paperclip, ExternalLink, Download } from 'lucide-react';
-import { LogEntry, ShiftType, SearchFilters } from '../types';
+import { Edit2, Trash2, Paperclip, ExternalLink, Download, X } from 'lucide-react';
+import { LogEntry, ShiftType, SearchFilters, ActiveShift } from '../types';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
 
 interface LogTableProps {
-  shift?: ShiftType;
+  showAllLogs: boolean;
   searchFilters: SearchFilters;
-  onShiftChange?: () => void;
+  activeShift: ActiveShift | null;
 }
 
-const LogTable: React.FC<LogTableProps> = ({ shift, searchFilters, onShiftChange }) => {
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+interface ShiftInfo {
+  started_at: string;
+  ended_at: string | null;
+  shift_type: ShiftType;
+}
+
+interface GroupedLogs {
+  [key: string]: {
+    shift_type: ShiftType;
+    started_at: string;
+    ended_at: string | null;
+    logs: LogEntry[];
+  };
+}
+
+interface ShiftGroup {
+  shiftType: ShiftType;
+  startTime: string;
+  endTime: string | null;
+  logs: LogEntry[];
+}
+
+const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeShift }) => {
+  const [rawLogs, setRawLogs] = useState<ShiftGroup[]>([]);
+  const [logs, setLogs] = useState<ShiftGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingLog, setEditingLog] = useState<LogEntry | null>(null);
+  const [criticalEvents, setCriticalEvents] = useState<LogEntry[]>([]);
 
   useEffect(() => {
     fetchLogs();
+    fetchCriticalEvents();
 
     // Subscribe to real-time changes
     const logChannel = supabase.channel('log_entries_changes');
@@ -31,50 +56,14 @@ const LogTable: React.FC<LogTableProps> = ({ shift, searchFilters, onShiftChange
           table: 'log_entries'
         },
         async (payload) => {
-          // For any change, fetch the complete log entry with attachments
-          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-            const { data: updatedLog, error } = await supabase
-              .from('log_entries')
-              .select(`
-                *,
-                attachments (
-                  id,
-                  file_name,
-                  file_type,
-                  file_size,
-                  file_path,
-                  created_at
-                )
-              `)
-              .eq('id', payload.new.id)
-              .single();
-
-            if (error) {
-              console.error('Error fetching updated log:', error);
-              return;
-            }
-
-            if (payload.eventType === 'INSERT') {
-              if (matchesFilters(updatedLog)) {
-                setLogs(currentLogs => [updatedLog, ...currentLogs]);
-              }
-            } else if (payload.eventType === 'UPDATE') {
-              setLogs(currentLogs => 
-                currentLogs.map(log => 
-                  log.id === updatedLog.id ? updatedLog : log
-                )
-              );
-            }
-          } else if (payload.eventType === 'DELETE') {
-            setLogs(currentLogs => 
-              currentLogs.filter(log => log.id !== payload.old.id)
-            );
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE' || payload.eventType === 'DELETE') {
+            await fetchLogs();
+            await fetchCriticalEvents();
           }
         }
       )
       .subscribe();
 
-    // Subscribe to active_shifts changes
     const shiftSubscription = shiftChannel
       .on(
         'postgres_changes',
@@ -83,11 +72,9 @@ const LogTable: React.FC<LogTableProps> = ({ shift, searchFilters, onShiftChange
           schema: 'public',
           table: 'active_shifts'
         },
-        () => {
-          // Notify parent component to refresh shift status
-          if (onShiftChange) {
-            onShiftChange();
-          }
+        async () => {
+          await fetchLogs();
+          await fetchCriticalEvents();
         }
       )
       .subscribe();
@@ -96,29 +83,7 @@ const LogTable: React.FC<LogTableProps> = ({ shift, searchFilters, onShiftChange
       logChannel.unsubscribe();
       shiftChannel.unsubscribe();
     };
-  }, [shift, searchFilters, onShiftChange]);
-
-  const matchesFilters = (log: LogEntry): boolean => {
-    if (shift && log.shift_type !== shift) return false;
-    
-    if (searchFilters.keyword && !log.description.toLowerCase().includes(searchFilters.keyword.toLowerCase())) {
-      return false;
-    }
-
-    const logDate = new Date(log.created_at).getTime();
-    
-    if (searchFilters.startDate) {
-      const startDate = new Date(searchFilters.startDate).getTime();
-      if (logDate < startDate) return false;
-    }
-    
-    if (searchFilters.endDate) {
-      const endDate = new Date(searchFilters.endDate).getTime();
-      if (logDate > endDate) return false;
-    }
-
-    return true;
-  };
+  }, [showAllLogs, searchFilters, activeShift]);
 
   const fetchLogs = async () => {
     try {
@@ -138,40 +103,149 @@ const LogTable: React.FC<LogTableProps> = ({ shift, searchFilters, onShiftChange
         `)
         .order('created_at', { ascending: false });
 
-      if (shift) {
-        query = query.eq('shift_type', shift);
+      // Apply filters based on showAllLogs
+      if (!showAllLogs && activeShift) {
+        // If showing current shift only, filter by active shift
+        query = query
+          .eq('shift_type', activeShift.shift_type)
+          .gte('created_at', activeShift.started_at);
       }
 
-      if (searchFilters.keyword) {
-        query = query.ilike('description', `%${searchFilters.keyword}%`);
-      }
-
+      // Handle date filters
       if (searchFilters.startDate) {
         const startDate = new Date(searchFilters.startDate);
-        startDate.setSeconds(0, 0); // Reset seconds and milliseconds
-        query = query.gte('created_at', startDate.toISOString());
+        if (!isNaN(startDate.getTime())) {
+          query = query.gte('created_at', startDate.toISOString());
+        }
       }
 
       if (searchFilters.endDate) {
         const endDate = new Date(searchFilters.endDate);
-        endDate.setSeconds(59, 999); // Set to end of the minute
-        query = query.lte('created_at', endDate.toISOString());
+        if (!isNaN(endDate.getTime())) {
+          query = query.lte('created_at', endDate.toISOString());
+        }
       }
 
+      // Handle shift type filter
+      if (searchFilters.shiftType !== undefined) {
+        query = query.eq('shift_type', searchFilters.shiftType);
+      }
+
+      // Execute the query
       const { data, error } = await query;
 
       if (error) {
+        console.error('Supabase query error:', error);
         throw error;
       }
 
-      // Double-check the date filters on the client side
-      const filteredData = data?.filter(log => matchesFilters(log)) || [];
-      setLogs(filteredData);
+      if (!data) {
+        setRawLogs([]);
+        setLogs([]);
+        return;
+      }
+
+      // Process the results
+      const groupedLogs: ShiftGroup[] = [];
+      let currentGroup: ShiftGroup | null = null;
+
+      // Sort data chronologically
+      const sortedData = [...data].sort((a, b) => 
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      );
+
+      // Group logs by shift
+      for (const log of sortedData) {
+        // Skip if category filter is active and doesn't match
+        if (searchFilters.category && 
+            log.category !== searchFilters.category && 
+            log.category !== 'shift') {
+          continue;
+        }
+
+        if (log.category === 'shift') {
+          if (log.description.includes('shift started')) {
+            // Close previous group if exists
+            if (currentGroup && !currentGroup.endTime) {
+              currentGroup.endTime = log.created_at;
+            }
+            // Start new group
+            currentGroup = {
+              shiftType: log.shift_type,
+              startTime: log.created_at,
+              endTime: null,
+              logs: [log]
+            };
+            groupedLogs.push(currentGroup);
+          } else if (log.description.includes('shift ended') && currentGroup) {
+            if (currentGroup.shiftType === log.shift_type) {
+              currentGroup.endTime = log.created_at;
+              currentGroup.logs.push(log);
+              currentGroup = null;
+            }
+          }
+        } else if (currentGroup) {
+          currentGroup.logs.push(log);
+        }
+      }
+
+      // Only reverse once here
+      const reversedGroups = groupedLogs.reverse();
+      setRawLogs(reversedGroups);
+      setLogs(reversedGroups);
     } catch (error) {
-      console.error('Error fetching logs:', error);
-      toast.error('Failed to fetch logs');
+      console.error('Error in fetchLogs:', error);
+      toast.error('Failed to fetch logs. Please try again.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Client-side filtering for the search bar keyword and category
+  useEffect(() => {
+    let filteredGroups = rawLogs;
+
+    // Filter by keyword
+    if (searchFilters.keyword && searchFilters.keyword.trim() !== '') {
+      const keyword = searchFilters.keyword.trim().toLowerCase();
+      filteredGroups = filteredGroups.map(group => ({
+        ...group,
+        logs: group.logs.filter(log =>
+          log.category !== 'shift' &&
+          (
+            (log.description && log.description.toLowerCase().includes(keyword)) ||
+            (log.category && log.category.toLowerCase().includes(keyword))
+          )
+        )
+      })).filter(group => group.logs.length > 0);
+    }
+
+    // Filter by category
+    if (searchFilters.category) {
+      filteredGroups = filteredGroups.map(group => ({
+        ...group,
+        logs: group.logs.filter(log =>
+          log.category === searchFilters.category
+        )
+      })).filter(group => group.logs.length > 0);
+    }
+
+    setLogs(filteredGroups);
+  }, [searchFilters.keyword, searchFilters.category, rawLogs]);
+
+  const fetchCriticalEvents = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('log_entries')
+        .select('*')
+        .in('category', ['error', 'downtime'])
+        .order('created_at', { ascending: false })
+        .limit(2);
+
+      if (error) throw error;
+      setCriticalEvents(data || []);
+    } catch (error) {
+      console.error('Error fetching critical events:', error);
     }
   };
 
@@ -317,9 +391,6 @@ const LogTable: React.FC<LogTableProps> = ({ shift, searchFilters, onShiftChange
       
       // Refresh logs and notify parent of shift change
       await fetchLogs();
-      if (onShiftChange) {
-        onShiftChange();
-      }
     } catch (error) {
       console.error('Error deleting log:', error);
       toast.error('Failed to delete log entry');
@@ -352,19 +423,74 @@ const LogTable: React.FC<LogTableProps> = ({ shift, searchFilters, onShiftChange
   const handleView = async (filePath: string) => {
     try {
       // Get a signed URL that expires in 1 hour
-      const { data: { signedUrl }, error } = await supabase.storage
+      const { data, error } = await supabase.storage
         .from('attachments')
         .createSignedUrl(filePath, 3600);
 
       if (error) throw error;
-      if (!signedUrl) throw new Error('Failed to generate signed URL');
+      if (!data?.signedUrl) throw new Error('Failed to generate signed URL');
 
       // Open in new tab
-      window.open(signedUrl, '_blank');
+      window.open(data.signedUrl, '_blank');
     } catch (error) {
       console.error('Error viewing file:', error);
       toast.error('Failed to view file');
     }
+  };
+
+  const exportAllLogsToText = () => {
+    let textContent = 'Logbook Export\n';
+    textContent += 'Generated on: ' + new Date().toLocaleString() + '\n\n';
+
+    logs.forEach((shiftGroup, index) => {
+      textContent += `=== ${shiftGroup.shiftType.toUpperCase()} SHIFT ===\n`;
+      textContent += `Start: ${new Date(shiftGroup.startTime).toLocaleString()}\n`;
+      textContent += `End: ${shiftGroup.endTime ? new Date(shiftGroup.endTime).toLocaleString() : 'Ongoing'}\n\n`;
+
+      shiftGroup.logs.forEach((log) => {
+        textContent += `[${new Date(log.created_at).toLocaleString()}] ${log.category.toUpperCase()}\n`;
+        textContent += `Description: ${log.description}\n`;
+        
+        // Add additional details if they exist
+        if (log.case_number || log.workorder_number || log.mc_setpoint) {
+          textContent += 'Details:\n';
+          if (log.case_number) textContent += `- Case: ${log.case_number} (${log.case_status || 'N/A'})\n`;
+          if (log.workorder_number) textContent += `- Work Order: ${log.workorder_number} (${log.workorder_status || 'N/A'})\n`;
+          if (log.mc_setpoint) {
+            textContent += '- Machine Parameters:\n';
+            textContent += `  * MC Setpoint: ${log.mc_setpoint}\n`;
+            textContent += `  * Yoke Temp: ${log.yoke_temperature}°C\n`;
+            textContent += `  * Arc Current: ${log.arc_current}A\n`;
+            textContent += `  * Filament: ${log.filament_current}A\n`;
+            textContent += `  * PIE Width: ${log.pie_width}\n`;
+            textContent += `  * P2E Width: ${log.p2e_width}\n`;
+          }
+        }
+
+        // Add attachments if they exist
+        if (log.attachments && log.attachments.length > 0) {
+          textContent += 'Attachments:\n';
+          log.attachments.forEach(attachment => {
+            textContent += `- ${attachment.file_name} (${formatFileSize(attachment.file_size)})\n`;
+          });
+        }
+
+        textContent += '\n';
+      });
+
+      textContent += '='.repeat(50) + '\n\n';
+    });
+
+    // Create and trigger download
+    const blob = new Blob([textContent], { type: 'text/plain;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `logbook_export_${new Date().toISOString().split('T')[0]}.txt`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   if (loading) {
@@ -376,51 +502,77 @@ const LogTable: React.FC<LogTableProps> = ({ shift, searchFilters, onShiftChange
   }
 
   return (
-    <div className="bg-gray-800 shadow-xl rounded-lg overflow-hidden border border-gray-700">
-      <table className="min-w-full divide-y divide-gray-700">
-        <thead className="bg-gray-900">
-          <tr>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">
-              Date & Time
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">
-              Category
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">
-              Description
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">
-              Details
-            </th>
-            <th className="px-6 py-3 text-right text-xs font-medium text-gray-300 uppercase tracking-wider">
-              Actions
-            </th>
-          </tr>
-        </thead>
-        <tbody className="bg-gray-800 divide-y divide-gray-700">
-          {logs.map((log) => (
-            <tr key={log.id} className="hover:bg-gray-700">
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-300">
-                {formatDateTime(log.created_at)}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap">
-                <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="flex justify-end mb-4">
+        <button 
+          className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm font-medium transition-colors shadow-md"
+          onClick={exportAllLogsToText}
+        >
+          Export All Logs
+        </button>
+      </div>
+      <div className="space-y-8">
+        {logs.map((shiftGroup, index) => (
+          <div 
+            key={shiftGroup.startTime} 
+            className="bg-gray-800/50 backdrop-blur-sm rounded-xl border border-gray-700/50 overflow-hidden shadow-lg transform transition-all hover:shadow-xl"
+          >
+            <div className="bg-gray-900/50 p-4 border-b border-gray-700/50">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold text-white flex items-center">
+                    <span className={`w-2 h-2 rounded-full mr-2 ${
+                      shiftGroup.shiftType === 'morning' ? 'bg-blue-500' :
+                      shiftGroup.shiftType === 'afternoon' ? 'bg-yellow-500' :
+                      'bg-purple-500'
+                    }`}></span>
+                    {shiftGroup.shiftType.charAt(0).toUpperCase() + shiftGroup.shiftType.slice(1)} Shift
+                  </h3>
+                  <p className="text-sm text-gray-400 mt-1">
+                    {new Date(shiftGroup.startTime).toLocaleString()} - 
+                    {shiftGroup.endTime ? new Date(shiftGroup.endTime).toLocaleString() : 'Ongoing'}
+                  </p>
+                </div>
+              </div>
+            </div>
+            
+            <div className="p-4 space-y-4">
+              {shiftGroup.logs.map((log) => (
+                <div
+                  key={log.id}
+                  className={`p-4 rounded-lg border transition-all hover:transform hover:scale-[1.01] shadow-md ${
+                    log.category === 'error' ? 'bg-red-900/20 border-red-700/50' :
+                    log.category === 'downtime' ? 'bg-yellow-900/20 border-yellow-700/50' :
+                    log.category === 'workorder' ? 'bg-blue-900/20 border-blue-700/50' :
+                    log.category === 'data-collection' ? 'bg-purple-900/20 border-purple-700/50' :
+                    log.category === 'shift' ? 'bg-green-900/20 border-green-700/50' :
+                    'bg-white/5 border-white/10'
+                  }`}
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center space-x-3 mb-2">
+                        <span className={`px-2 py-1 text-xs font-semibold rounded-full ${
                   log.category === 'error' ? 'bg-red-900 text-red-200' :
                   log.category === 'downtime' ? 'bg-yellow-900 text-yellow-200' :
                   log.category === 'workorder' ? 'bg-blue-900 text-blue-200' :
                   log.category === 'data-collection' ? 'bg-purple-900 text-purple-200' :
-                  'bg-green-900 text-green-200'
+                        log.category === 'shift' ? 'bg-green-900 text-green-200' :
+                        'bg-gray-700 text-gray-200'
                 }`}>
                   {log.category}
                 </span>
-              </td>
-              <td className="px-6 py-4 text-sm text-gray-200">
+                        <span className="text-sm text-gray-400">
+                          {formatDateTime(log.created_at)}
+                        </span>
+                      </div>
+                      
                 {editingLog?.id === log.id ? (
                   <div className="flex items-center space-x-2">
                     <input
                       type="text"
                       defaultValue={log.description}
-                      className="flex-1 rounded-md bg-gray-700 border-gray-600 text-white"
+                            className="flex-1 rounded-lg bg-white/5 border-0 text-white px-4 py-2 focus:ring-2 focus:ring-indigo-500"
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           handleSaveEdit(log, e.currentTarget.value);
@@ -432,14 +584,16 @@ const LogTable: React.FC<LogTableProps> = ({ shift, searchFilters, onShiftChange
                     />
                     <button
                       onClick={() => setEditingLog(null)}
-                      className="text-gray-400 hover:text-white"
+                            className="text-gray-400 hover:text-white transition-colors"
                     >
-                      Cancel
+                            <X className="h-4 w-4" />
                     </button>
                   </div>
                 ) : (
-                  <div>
-                    <p>{log.description}</p>
+                        <p className="text-white">{log.description}</p>
+                      )}
+
+                      {/* Attachments */}
                     {log.attachments && log.attachments.length > 0 && (
                       <div className="mt-2 space-y-1">
                         {log.attachments.map((attachment) => (
@@ -450,14 +604,14 @@ const LogTable: React.FC<LogTableProps> = ({ shift, searchFilters, onShiftChange
                             <div className="flex items-center space-x-2">
                               <button
                                 onClick={() => handleView(attachment.file_path)}
-                                className="text-blue-400 hover:text-blue-300"
+                                  className="text-blue-400 hover:text-blue-300 transition-colors"
                                 title="View"
                               >
                                 <ExternalLink className="h-4 w-4" />
                               </button>
                               <button
                                 onClick={() => handleDownload(attachment.file_path, attachment.file_name)}
-                                className="text-green-400 hover:text-green-300"
+                                  className="text-green-400 hover:text-green-300 transition-colors"
                                 title="Download"
                               >
                                 <Download className="h-4 w-4" />
@@ -467,52 +621,79 @@ const LogTable: React.FC<LogTableProps> = ({ shift, searchFilters, onShiftChange
                         ))}
                       </div>
                     )}
+
+                      {/* Additional Details */}
+                      {(log.case_number || log.workorder_number || log.mc_setpoint) && (
+                        <div className="mt-3 grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
+                          {log.case_number && (
+                            <div className="bg-white/5 rounded-lg p-2">
+                              <span className="text-gray-400">Case:</span>
+                              <div className="text-white">{log.case_number}</div>
+                              <div className="text-gray-400">{log.case_status}</div>
                   </div>
-                )}
-              </td>
-              <td className="px-6 py-4 text-sm text-gray-300">
-                {log.case_number && (
-                  <div>Case: {log.case_number} ({log.case_status})</div>
                 )}
                 {log.workorder_number && (
-                  <div>WO: {log.workorder_number} ({log.workorder_status})</div>
+                            <div className="bg-white/5 rounded-lg p-2">
+                              <span className="text-gray-400">Work Order:</span>
+                              <div className="text-white">{log.workorder_number}</div>
+                              <div className="text-gray-400">{log.workorder_status}</div>
+                            </div>
                 )}
                 {log.mc_setpoint && (
-                  <div className="space-y-1">
-                    <div>MC: {log.mc_setpoint}</div>
-                    <div>Yoke: {log.yoke_temperature}°C</div>
-                    <div>Arc: {log.arc_current}A</div>
-                    <div>Fil: {log.filament_current}A</div>
-                    <div>PIE: {log.pie_width}</div>
-                    <div>P2E: {log.p2e_width}</div>
+                            <>
+                              <div className="bg-white/5 rounded-lg p-2">
+                                <span className="text-gray-400">MC Setpoint:</span>
+                                <div className="text-white">{log.mc_setpoint}</div>
+                              </div>
+                              <div className="bg-white/5 rounded-lg p-2">
+                                <span className="text-gray-400">Yoke Temp:</span>
+                                <div className="text-white">{log.yoke_temperature}°C</div>
+                              </div>
+                              <div className="bg-white/5 rounded-lg p-2">
+                                <span className="text-gray-400">Arc Current:</span>
+                                <div className="text-white">{log.arc_current}A</div>
+                              </div>
+                              <div className="bg-white/5 rounded-lg p-2">
+                                <span className="text-gray-400">Filament:</span>
+                                <div className="text-white">{log.filament_current}A</div>
+                              </div>
+                              <div className="bg-white/5 rounded-lg p-2">
+                                <span className="text-gray-400">PIE Width:</span>
+                                <div className="text-white">{log.pie_width}</div>
+                              </div>
+                              <div className="bg-white/5 rounded-lg p-2">
+                                <span className="text-gray-400">P2E Width:</span>
+                                <div className="text-white">{log.p2e_width}</div>
+                              </div>
+                            </>
+                          )}
                   </div>
                 )}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    </div>
+
+                    <div className="flex items-center space-x-2">
                 <button 
-                  className="text-blue-400 hover:text-blue-300 mr-3"
+                        className="p-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
                   onClick={() => handleEdit(log)}
+                        title="Edit"
                 >
                   <Edit2 className="h-4 w-4" />
                 </button>
                 <button 
-                  className="text-red-400 hover:text-red-300"
+                        className="p-2 bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors"
                   onClick={() => handleDelete(log)}
+                        title="Delete"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
-              </td>
-            </tr>
+                    </div>
+                  </div>
+                </div>
           ))}
-          {logs.length === 0 && (
-            <tr>
-              <td colSpan={5} className="px-6 py-4 text-center text-gray-400">
-                No logs found
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 };

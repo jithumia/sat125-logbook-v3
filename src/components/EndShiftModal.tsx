@@ -1,84 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { X } from 'lucide-react';
+import { ActiveShift } from '../types';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
 
 interface EndShiftModalProps {
   onClose: () => void;
-  currentShift: string;
-  onShiftEnded: () => void;
+  onSuccess: () => void;
+  activeShift: ActiveShift | null;
 }
 
-const EndShiftModal: React.FC<EndShiftModalProps> = ({ onClose, currentShift, onShiftEnded }) => {
+const EndShiftModal: React.FC<EndShiftModalProps> = ({ onClose, onSuccess, activeShift }) => {
   const [note, setNote] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [activeShiftId, setActiveShiftId] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetchActiveShift();
-  }, [currentShift]);
-
-  const fetchActiveShift = async () => {
-    try {
-      const { data: activeShifts, error } = await supabase
-        .from('active_shifts')
-        .select('id, shift_type')
-        .eq('shift_type', currentShift)
-        .maybeSingle();
-
-      if (error) {
-        console.error('Error fetching active shift:', error);
-        toast.error('Failed to verify active shift');
-        onClose();
-        return;
-      }
-
-      if (!activeShifts) {
-        console.error('No active shift found');
-        toast.error('No active shift found');
-        onClose();
-        return;
-      }
-
-      setActiveShiftId(activeShifts.id);
-    } catch (error) {
-      console.error('Error in fetchActiveShift:', error);
-      toast.error('Failed to verify active shift');
-      onClose();
-    }
-  };
-
-  const deleteActiveShift = async (shiftId: string): Promise<boolean> => {
-    try {
-      // Call the cleanup_shifts stored procedure
-      const { error } = await supabase.rpc('cleanup_shifts', {
-        shift_ids: [shiftId]
-      });
-
-      if (error) {
-        console.error('Error calling cleanup_shifts:', error);
-        return false;
-      }
-
-      // Verify the deletion
-      const { data: shift, error: verifyError } = await supabase
-        .from('active_shifts')
-        .select('id')
-        .eq('id', shiftId)
-        .maybeSingle();
-
-      if (verifyError) {
-        console.error('Error verifying shift deletion:', verifyError);
-        return false;
-      }
-
-      // If shift is null, it means it was successfully deleted
-      return shift === null;
-    } catch (error) {
-      console.error('Error in deleteActiveShift:', error);
-      return false;
-    }
-  };
+  const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -88,14 +22,14 @@ const EndShiftModal: React.FC<EndShiftModalProps> = ({ onClose, currentShift, on
       return;
     }
 
-    if (!activeShiftId) {
+    if (!activeShift) {
       toast.error('No active shift found');
       onClose();
       return;
     }
 
     try {
-      setSubmitting(true);
+      setLoading(true);
 
       const { data: { user } } = await supabase.auth.getUser();
       
@@ -107,7 +41,7 @@ const EndShiftModal: React.FC<EndShiftModalProps> = ({ onClose, currentShift, on
       const { error: noteError } = await supabase
         .from('shift_notes')
         .insert([{
-          shift_type: currentShift,
+          shift_type: activeShift.shift_type,
           note: note.trim(),
           user_id: user.id
         }]);
@@ -121,9 +55,9 @@ const EndShiftModal: React.FC<EndShiftModalProps> = ({ onClose, currentShift, on
       const { error: logError } = await supabase
         .from('log_entries')
         .insert([{
-          shift_type: currentShift,
+          shift_type: activeShift.shift_type,
           category: 'shift',
-          description: `${currentShift} shift ended. Note: ${note.trim()}`,
+          description: `${activeShift.shift_type} shift ended. Note: ${note.trim()}`,
           user_id: user.id
         }]);
 
@@ -133,24 +67,27 @@ const EndShiftModal: React.FC<EndShiftModalProps> = ({ onClose, currentShift, on
       }
 
       // Step 3: Delete active shift using stored procedure
-      const deleted = await deleteActiveShift(activeShiftId);
+      const { error: deleteError } = await supabase.rpc('cleanup_shifts', {
+        shift_ids: [activeShift.id]
+      });
 
-      if (!deleted) {
-        throw new Error(`Failed to delete active shift (ID: ${activeShiftId})`);
+      if (deleteError) {
+        console.error('Error calling cleanup_shifts:', deleteError);
+        throw new Error('Failed to delete active shift');
       }
 
       toast.success('Shift ended successfully');
-      await onShiftEnded();
+      await onSuccess();
       onClose();
     } catch (error) {
       console.error('Error ending shift:', error);
       toast.error(error instanceof Error ? error.message : 'Failed to end shift');
     } finally {
-      setSubmitting(false);
+      setLoading(false);
     }
   };
 
-  if (!activeShiftId) {
+  if (!activeShift) {
     return null;
   }
 
@@ -187,17 +124,17 @@ const EndShiftModal: React.FC<EndShiftModalProps> = ({ onClose, currentShift, on
             <button
               type="button"
               onClick={onClose}
-              disabled={submitting}
+              disabled={loading}
               className="px-4 py-2 bg-gray-700 text-white rounded-md hover:bg-gray-600 transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
-              disabled={submitting}
+              disabled={loading}
               className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors flex items-center"
             >
-              {submitting ? (
+              {loading ? (
                 <>
                   <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
                   Ending...

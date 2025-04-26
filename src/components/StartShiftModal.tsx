@@ -6,15 +6,16 @@ import toast from 'react-hot-toast';
 
 interface StartShiftModalProps {
   onClose: () => void;
-  onShiftStarted: () => void;
+  onSuccess: () => void;
 }
 
-const StartShiftModal: React.FC<StartShiftModalProps> = ({ onClose, onShiftStarted }) => {
+const StartShiftModal: React.FC<StartShiftModalProps> = ({ onClose, onSuccess }) => {
   const [engineers, setEngineers] = useState<Engineer[]>([]);
   const [selectedEngineers, setSelectedEngineers] = useState<string[]>([]);
   const [salesforceNumber, setSalesforceNumber] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [shiftType, setShiftType] = useState<ShiftType>('morning');
 
   useEffect(() => {
     fetchEngineers();
@@ -153,7 +154,7 @@ const StartShiftModal: React.FC<StartShiftModalProps> = ({ onClose, onShiftStart
       }
 
       // Success! Update the UI
-      await onShiftStarted();
+      await onSuccess();
       toast.success('Shift started successfully');
       onClose();
     } catch (error) {

@@ -6,6 +6,7 @@ export interface SearchFilters {
   startDate: string;
   endDate: string;
   keyword: string;
+  shiftType?: string;
 }
 
 export interface Engineer {

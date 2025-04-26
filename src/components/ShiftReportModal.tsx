@@ -6,9 +6,10 @@ import { LogEntry, ActiveShift } from '../types';
 
 interface ShiftReportModalProps {
   onClose: () => void;
+  activeShift: ActiveShift | null;
 }
 
-const ShiftReportModal: React.FC<ShiftReportModalProps> = ({ onClose }) => {
+const ShiftReportModal: React.FC<ShiftReportModalProps> = ({ onClose, activeShift }) => {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [reportData, setReportData] = useState<{
