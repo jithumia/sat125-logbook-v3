@@ -11,16 +11,18 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     autoRefreshToken: true,
     persistSession: true,
-    detectSessionInUrl: false,
-    storageKey: 'supabase.auth.token',
-    storage: window.localStorage
+    detectSessionInUrl: true,
+    storageKey: 'sat125-logbook-auth',
+    storage: window.localStorage,
+    flowType: 'pkce'
   }
 });
 
 // Add a global error handler for auth errors
 supabase.auth.onAuthStateChange((event, session) => {
-  if (event === 'SIGNED_OUT' || event === 'USER_DELETED') {
+  console.log('Auth state changed:', event, session);
+  if (event === 'SIGNED_OUT') {
     // Clear any cached data
-    window.localStorage.removeItem('supabase.auth.token');
+    window.localStorage.removeItem('sat125-logbook-auth');
   }
 });

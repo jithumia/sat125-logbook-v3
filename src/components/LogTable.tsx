@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Edit2, Trash2, Paperclip, ExternalLink, Download, X } from 'lucide-react';
+import { Edit2, Trash2, Paperclip, ExternalLink, Download, X, Sun, Sunset, Moon, Clock, ChevronDown } from 'lucide-react';
 import { LogEntry, ShiftType, SearchFilters, ActiveShift } from '../types';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
@@ -32,22 +32,41 @@ interface ShiftGroup {
   logs: LogEntry[];
 }
 
+type CategoryType = 'maintenance' | 'incident' | 'operation' | 'safety' | 'other';
+type StatusType = 'open' | 'in_progress' | 'pending' | 'closed';
+
+// Add new interfaces for status types
+interface StatusOption {
+  value: string;
+  label: string;
+  color: string;
+}
+
+const STATUS_OPTIONS: StatusOption[] = [
+  { value: 'open', label: 'Open', color: 'bg-green-500' },
+  { value: 'in_progress', label: 'In Progress', color: 'bg-yellow-500' },
+  { value: 'pending', label: 'Pending', color: 'bg-orange-500' },
+  { value: 'closed', label: 'Closed', color: 'bg-gray-500' }
+];
+
 const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeShift }) => {
   const [rawLogs, setRawLogs] = useState<ShiftGroup[]>([]);
   const [logs, setLogs] = useState<ShiftGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingLog, setEditingLog] = useState<LogEntry | null>(null);
+  const [editedDescription, setEditedDescription] = useState('');
   const [criticalEvents, setCriticalEvents] = useState<LogEntry[]>([]);
+  const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
+  const [activeStatusId, setActiveStatusId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchLogs();
     fetchCriticalEvents();
 
     // Subscribe to real-time changes
-    const logChannel = supabase.channel('log_entries_changes');
-    const shiftChannel = supabase.channel('active_shifts_changes');
+    const channel = supabase.channel('log-updates');
     
-    const logSubscription = logChannel
+    const subscription = channel
       .on(
         'postgres_changes',
         {
@@ -55,33 +74,18 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
           schema: 'public',
           table: 'log_entries'
         },
-        async (payload) => {
-          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE' || payload.eventType === 'DELETE') {
-            await fetchLogs();
-            await fetchCriticalEvents();
-          }
-        }
-      )
-      .subscribe();
-
-    const shiftSubscription = shiftChannel
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'active_shifts'
-        },
         async () => {
-          await fetchLogs();
-          await fetchCriticalEvents();
+          // Fetch both logs and critical events on any change
+          await Promise.all([
+            fetchLogs(),
+            fetchCriticalEvents()
+          ]);
         }
       )
       .subscribe();
 
     return () => {
-      logChannel.unsubscribe();
-      shiftChannel.unsubscribe();
+      subscription.unsubscribe();
     };
   }, [showAllLogs, searchFilters, activeShift]);
 
@@ -114,20 +118,18 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
       // Handle date filters
       if (searchFilters.startDate) {
         const startDate = new Date(searchFilters.startDate);
-        if (!isNaN(startDate.getTime())) {
-          query = query.gte('created_at', startDate.toISOString());
-        }
+        startDate.setHours(0, 0, 0, 0);
+        query = query.gte('created_at', startDate.toISOString());
       }
 
       if (searchFilters.endDate) {
         const endDate = new Date(searchFilters.endDate);
-        if (!isNaN(endDate.getTime())) {
-          query = query.lte('created_at', endDate.toISOString());
-        }
+        endDate.setHours(23, 59, 59, 999);
+        query = query.lte('created_at', endDate.toISOString());
       }
 
       // Handle shift type filter
-      if (searchFilters.shiftType !== undefined) {
+      if (searchFilters.shiftType) {
         query = query.eq('shift_type', searchFilters.shiftType);
       }
 
@@ -144,6 +146,14 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
         setLogs([]);
         return;
       }
+
+      // Debug log to verify the data
+      console.log('Fetched logs:', {
+        count: data.length,
+        filters: searchFilters,
+        firstLog: data[0],
+        lastLog: data[data.length - 1]
+      });
 
       // Process the results
       const groupedLogs: ShiftGroup[] = [];
@@ -210,13 +220,19 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
       const keyword = searchFilters.keyword.trim().toLowerCase();
       filteredGroups = filteredGroups.map(group => ({
         ...group,
-        logs: group.logs.filter(log =>
-          log.category !== 'shift' &&
-          (
-            (log.description && log.description.toLowerCase().includes(keyword)) ||
-            (log.category && log.category.toLowerCase().includes(keyword))
-          )
-        )
+        logs: group.logs.filter(log => {
+          // Include shift entries and check for engineer name in shift entries
+          if (log.category === 'shift') {
+            const shiftDesc = log.description.toLowerCase();
+            return shiftDesc.includes(keyword) || // Match shift description
+                   (shiftDesc.includes('shift started by') && shiftDesc.includes(keyword)) || // Match engineer name in start entry
+                   (shiftDesc.includes('shift ended by') && shiftDesc.includes(keyword)); // Match engineer name in end entry
+          }
+          
+          // For non-shift entries, check description and category
+          return (log.description && log.description.toLowerCase().includes(keyword)) ||
+                 (log.category && log.category.toLowerCase().includes(keyword));
+        })
       })).filter(group => group.logs.length > 0);
     }
 
@@ -225,7 +241,8 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
       filteredGroups = filteredGroups.map(group => ({
         ...group,
         logs: group.logs.filter(log =>
-          log.category === searchFilters.category
+          log.category === searchFilters.category || 
+          (searchFilters.category === 'shift' && log.category === 'shift')
         )
       })).filter(group => group.logs.length > 0);
     }
@@ -240,7 +257,7 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
         .select('*')
         .in('category', ['error', 'downtime'])
         .order('created_at', { ascending: false })
-        .limit(2);
+        .limit(5);
 
       if (error) throw error;
       setCriticalEvents(data || []);
@@ -250,16 +267,23 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
   };
 
   const formatDateTime = (dateString: string): string => {
-    const options: Intl.DateTimeFormatOptions = {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
+    const date = new Date(dateString);
+    const time = date.toLocaleTimeString('en-US', {
       hour: '2-digit',
       minute: '2-digit',
-      second: '2-digit',
       hour12: true
-    };
-    return new Date(dateString).toLocaleString(undefined, options);
+    });
+    return time;
+  };
+
+  const formatDateForGroup = (dateString: string): string => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
   };
 
   const formatFileSize = (bytes: number): string => {
@@ -270,130 +294,139 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
   };
 
-  const handleEdit = async (log: LogEntry) => {
-    setEditingLog(log);
+  const getCategoryStyle = (category: string): string => {
+    const styles: Record<CategoryType, string> = {
+      'maintenance': 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+      'incident': 'bg-red-500/20 text-red-400 border-red-500/30',
+      'operation': 'bg-green-500/20 text-green-400 border-green-500/30',
+      'safety': 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+      'other': 'bg-purple-500/20 text-purple-400 border-purple-500/30'
+    };
+    return styles[category.toLowerCase() as CategoryType] || styles['other'];
   };
 
-  const handleSaveEdit = async (log: LogEntry, newDescription: string) => {
+  const getStatusStyle = (status: string): string => {
+    const styles: Record<StatusType, string> = {
+      'open': 'bg-green-500/20 text-green-400',
+      'in_progress': 'bg-yellow-500/20 text-yellow-400',
+      'pending': 'bg-orange-500/20 text-orange-400',
+      'closed': 'bg-gray-500/20 text-gray-400'
+    };
+    return styles[status.toLowerCase() as StatusType] || styles['open'];
+  };
+
+  const handleEdit = (log: LogEntry, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingLog(log);
+    setEditedDescription(log.description);
+  };
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingLog) return;
+
     try {
       const { error } = await supabase
         .from('log_entries')
-        .update({ description: newDescription.trim() })
-        .eq('id', log.id);
+        .update({ description: editedDescription.trim() })
+        .eq('id', editingLog.id);
 
-      if (error) {
-        throw error;
-      }
+      if (error) throw error;
+
+      // Optimistically update the UI
+      setRawLogs(prevLogs =>
+        prevLogs.map(group => ({
+          ...group,
+          logs: group.logs.map(log =>
+            log.id === editingLog.id
+              ? { ...log, description: editedDescription.trim() }
+              : log
+          )
+        }))
+      );
+
+      setCriticalEvents(prevEvents =>
+        prevEvents.map(event =>
+          event.id === editingLog.id
+            ? { ...event, description: editedDescription.trim() }
+            : event
+        )
+      );
 
       toast.success('Log entry updated');
       setEditingLog(null);
+      setEditedDescription('');
     } catch (error) {
       console.error('Error updating log:', error);
       toast.error('Failed to update log entry');
     }
   };
 
-  const handleDelete = async (log: LogEntry) => {
+  const handleCancelEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingLog(null);
+    setEditedDescription('');
+  };
+
+  const handleDelete = async (logId: string) => {
     try {
-      if (log.category === 'shift') {
-        // Handle shift start log deletion
-        if (log.description.includes('shift started')) {
-          // Get the active shift ID if it exists
-          const { data: activeShift, error: shiftError } = await supabase
-            .from('active_shifts')
-            .select('id')
-            .eq('shift_type', log.shift_type)
-            .maybeSingle();
+      // First, get all attachments for this log entry
+      const { data: attachments, error: fetchError } = await supabase
+        .from('attachments')
+        .select('*')
+        .eq('log_entry_id', logId);
 
-          if (shiftError) throw shiftError;
-
-          // If there's an active shift, clean it up
-          if (activeShift) {
-            const { error: cleanupError } = await supabase.rpc('cleanup_shifts', {
-              shift_ids: [activeShift.id]
-            });
-
-            if (cleanupError) throw cleanupError;
+      if (fetchError) {
+        console.error('Error fetching attachments:', fetchError);
+        toast.error('Failed to fetch attachments');
+        return;
           }
+
+      // Delete files from storage if there are any attachments
+      if (attachments && attachments.length > 0) {
+        // Delete files from storage
+        const filePaths = attachments.map(attachment => attachment.file_path);
+        const { error: storageError } = await supabase.storage
+          .from('attachments')
+          .remove(filePaths);
+
+        if (storageError) {
+          console.error('Error deleting files from storage:', storageError);
+          toast.error('Failed to delete files from storage');
+          return;
         }
-        // Handle shift end log deletion
-        else if (log.description.includes('shift ended')) {
-          // Find the corresponding start log
-          const { data: startLog, error: startLogError } = await supabase
-            .from('log_entries')
-            .select('*')
-            .eq('category', 'shift')
-            .eq('shift_type', log.shift_type)
-            .lt('created_at', log.created_at)
-            .ilike('description', '%shift started%')
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .single();
 
-          if (startLogError) throw startLogError;
+        // Delete attachment records from database
+        const { error: attachmentDeleteError } = await supabase
+          .from('attachments')
+          .delete()
+          .eq('log_entry_id', logId);
 
-          if (startLog) {
-            // Extract shift details from the start log description
-            const shiftDetails = startLog.description.match(/shift started by (.*?) \(SF#: (.*?)\)/);
-            if (!shiftDetails) {
-              throw new Error('Invalid shift start record format');
-            }
-
-            const [, engineerNames, salesforceNumber] = shiftDetails;
-            const engineers = engineerNames.split(', ');
-
-            // Get engineer IDs
-            const { data: engineerData, error: engineerError } = await supabase
-              .from('engineers')
-              .select('id, name')
-              .in('name', engineers);
-
-            if (engineerError) throw engineerError;
-
-            // Create new active shift
-            const { data: newShift, error: shiftError } = await supabase
-              .from('active_shifts')
-              .insert({
-                shift_type: log.shift_type,
-                started_at: startLog.created_at,
-                started_by: startLog.user_id,
-                salesforce_number: salesforceNumber
-              })
-              .select()
-              .single();
-
-            if (shiftError) throw shiftError;
-
-            // Add engineers to shift
-            const { error: engineersError } = await supabase
-              .from('shift_engineers')
-              .insert(
-                engineerData.map(eng => ({
-                  shift_id: newShift.id,
-                  engineer_id: eng.id
-                }))
-              );
-
-            if (engineersError) throw engineersError;
-          }
+        if (attachmentDeleteError) {
+          console.error('Error deleting attachment records:', attachmentDeleteError);
+          toast.error('Failed to delete attachment records');
+          return;
         }
       }
 
-      // Delete the log entry
-      const { error: deleteError } = await supabase
+      // Finally delete the log entry
+      const { error: logDeleteError } = await supabase
         .from('log_entries')
         .delete()
-        .eq('id', log.id);
+        .eq('id', logId);
 
-      if (deleteError) throw deleteError;
+      if (logDeleteError) {
+        console.error('Error deleting log:', logDeleteError);
+        toast.error('Failed to delete log entry');
+        return;
+      }
 
-      toast.success('Log entry deleted');
-      
-      // Refresh logs and notify parent of shift change
-      await fetchLogs();
+      toast.success('Log entry and attachments deleted successfully');
+      // Refresh the logs list
+      fetchLogs();
     } catch (error) {
-      console.error('Error deleting log:', error);
-      toast.error('Failed to delete log entry');
+      console.error('Error in delete process:', error);
+      toast.error('Failed to delete log entry and attachments');
     }
   };
 
@@ -414,6 +447,8 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
       link.click();
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
+      
+      toast.success('File downloaded successfully');
     } catch (error) {
       console.error('Error downloading file:', error);
       toast.error('Failed to download file');
@@ -422,7 +457,6 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
 
   const handleView = async (filePath: string) => {
     try {
-      // Get a signed URL that expires in 1 hour
       const { data, error } = await supabase.storage
         .from('attachments')
         .createSignedUrl(filePath, 3600);
@@ -430,7 +464,6 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
       if (error) throw error;
       if (!data?.signedUrl) throw new Error('Failed to generate signed URL');
 
-      // Open in new tab
       window.open(data.signedUrl, '_blank');
     } catch (error) {
       console.error('Error viewing file:', error);
@@ -493,6 +526,251 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     document.body.removeChild(link);
   };
 
+  const toggleLogExpansion = (logId: string) => {
+    setExpandedLogId(expandedLogId === logId ? null : logId);
+  };
+
+  const shouldShowExpand = (log: LogEntry): boolean => {
+    return Boolean(log.description.length > 100 || 
+           (log.attachments && log.attachments.length > 0));
+  };
+
+  // Handle new entry
+  const handleNewEntry = async (newEntry: LogEntry) => {
+    // Fetch the complete entry with attachments
+    const { data: entryWithAttachments, error } = await supabase
+      .from('log_entries')
+      .select(`
+        *,
+        attachments (
+          id,
+          file_name,
+          file_type,
+          file_size,
+          file_path,
+          created_at
+        )
+      `)
+      .eq('id', newEntry.id)
+      .single();
+
+    if (error) {
+      console.error('Error fetching new entry details:', error);
+      return;
+    }
+
+    // Update the state with the new entry
+    setRawLogs(prevLogs => {
+      const updatedLogs = [...prevLogs];
+      
+      // Find the appropriate shift group or create a new one
+      let targetGroup = updatedLogs.find(group => 
+        group.shiftType === entryWithAttachments.shift_type &&
+        isSameShift(group.startTime, entryWithAttachments.created_at)
+      );
+
+      if (!targetGroup) {
+        // Create a new shift group if needed
+        targetGroup = {
+          shiftType: entryWithAttachments.shift_type,
+          startTime: entryWithAttachments.created_at,
+          endTime: null,
+          logs: []
+        };
+        updatedLogs.unshift(targetGroup);
+      }
+
+      // Add the new entry to the group
+      targetGroup.logs.unshift(entryWithAttachments);
+      
+      return updatedLogs;
+    });
+  };
+
+  // Handle entry update
+  const handleEntryUpdate = async (updatedEntry: LogEntry) => {
+    // Fetch the complete updated entry with attachments
+    const { data: entryWithAttachments, error } = await supabase
+      .from('log_entries')
+      .select(`
+        *,
+        attachments (
+          id,
+          file_name,
+          file_type,
+          file_size,
+          file_path,
+          created_at
+        )
+      `)
+      .eq('id', updatedEntry.id)
+      .single();
+
+    if (error) {
+      console.error('Error fetching updated entry details:', error);
+      return;
+    }
+
+    setRawLogs(prevLogs => {
+      return prevLogs.map(group => ({
+        ...group,
+        logs: group.logs.map(log => 
+          log.id === entryWithAttachments.id ? entryWithAttachments : log
+        )
+      }));
+    });
+  };
+
+  // Handle entry deletion
+  const handleEntryDeletion = (deletedEntryId: string) => {
+    setRawLogs(prevLogs => {
+      return prevLogs.map(group => ({
+        ...group,
+        logs: group.logs.filter(log => log.id !== deletedEntryId)
+      })).filter(group => group.logs.length > 0);
+    });
+  };
+
+  // Helper function to check if two dates are in the same shift
+  const isSameShift = (date1: string, date2: string) => {
+    const d1 = new Date(date1);
+    const d2 = new Date(date2);
+    
+    // Check if dates are on the same day
+    const isSameDay = d1.toDateString() === d2.toDateString();
+    
+    if (!isSameDay) return false;
+    
+    // Get hours for both dates
+    const hours1 = d1.getHours();
+    const hours2 = d2.getHours();
+    
+    // Define shift ranges (adjust these according to your shift timings)
+    const isFirstShift = (h: number) => h >= 6 && h < 14;
+    const isSecondShift = (h: number) => h >= 14 && h < 22;
+    const isThirdShift = (h: number) => h >= 22 || h < 6;
+    
+    // Check if both times fall in the same shift
+    return (
+      (isFirstShift(hours1) && isFirstShift(hours2)) ||
+      (isSecondShift(hours1) && isSecondShift(hours2)) ||
+      (isThirdShift(hours1) && isThirdShift(hours2))
+    );
+  };
+
+  // Update the handleStatusChange function to not wait for subscription
+  const handleStatusChange = async (logId: string, newStatus: string, field: 'case_status' | 'workorder_status') => {
+    try {
+      // Optimistically update both rawLogs and criticalEvents
+      setRawLogs(prevLogs => 
+        prevLogs.map(group => ({
+          ...group,
+          logs: group.logs.map(log => 
+            log.id === logId 
+              ? { ...log, [field]: newStatus }
+              : log
+          )
+        }))
+      );
+
+      setCriticalEvents(prevEvents =>
+        prevEvents.map(event =>
+          event.id === logId
+            ? { ...event, [field]: newStatus }
+            : event
+        )
+      );
+
+      // Send update to server
+      const { error } = await supabase
+        .from('log_entries')
+        .update({ [field]: newStatus })
+        .eq('id', logId);
+
+      if (error) {
+        throw error;
+      }
+
+      toast.success('Status updated successfully');
+      setActiveStatusId(null);
+
+      // Fetch fresh data to ensure consistency
+      await Promise.all([
+        fetchLogs(),
+        fetchCriticalEvents()
+      ]);
+    } catch (error) {
+      console.error('Error updating status:', error);
+      toast.error('Failed to update status');
+      // Revert both optimistic updates on error
+      await Promise.all([
+        fetchLogs(),
+        fetchCriticalEvents()
+      ]);
+    }
+  };
+
+  // Add click handler to prevent event propagation
+  const handleStatusClick = (e: React.MouseEvent, logId: string) => {
+    e.stopPropagation();
+    setActiveStatusId(activeStatusId === logId ? null : logId);
+  };
+
+  // Add click handler to close menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (activeStatusId && !(e.target as Element).closest('.status-menu')) {
+        setActiveStatusId(null);
+      }
+    };
+
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, [activeStatusId]);
+
+  // Add these styles at the top of your file or in your global CSS
+  const styles = `
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(0.5);
+      }
+      to {
+        opacity: 1;
+        transform: translate(-50%, -50%) scale(1);
+      }
+    }
+
+    @keyframes fadeOut {
+      from {
+        opacity: 1;
+        transform: translate(-50%, -50%) scale(1);
+      }
+      to {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(0.5);
+      }
+    }
+
+    .animate-in {
+      animation: fadeIn 0.3s ease-in-out forwards;
+    }
+
+    .animate-out {
+      animation: fadeOut 0.3s ease-in-out forwards;
+    }
+  `;
+
+  // Add the styles to the document head
+  useEffect(() => {
+    const styleElement = document.createElement('style');
+    styleElement.innerHTML = styles;
+    document.head.appendChild(styleElement);
+    return () => {
+      document.head.removeChild(styleElement);
+    };
+  }, []);
+
   if (loading) {
     return (
       <div className="flex justify-center items-center h-64">
@@ -502,116 +780,222 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <div className="flex justify-end mb-4">
-        <button 
-          className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm font-medium transition-colors shadow-md"
-          onClick={exportAllLogsToText}
-        >
-          Export All Logs
-        </button>
-      </div>
-      <div className="space-y-8">
-        {logs.map((shiftGroup, index) => (
-          <div 
-            key={shiftGroup.startTime} 
-            className="bg-gray-800/50 backdrop-blur-sm rounded-xl border border-gray-700/50 overflow-hidden shadow-lg transform transition-all hover:shadow-xl"
-          >
-            <div className="bg-gray-900/50 p-4 border-b border-gray-700/50">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-lg font-semibold text-white flex items-center">
-                    <span className={`w-2 h-2 rounded-full mr-2 ${
-                      shiftGroup.shiftType === 'morning' ? 'bg-blue-500' :
-                      shiftGroup.shiftType === 'afternoon' ? 'bg-yellow-500' :
-                      'bg-purple-500'
-                    }`}></span>
+    <div className="space-y-6">
+      {logs.map((shiftGroup, groupIndex) => (
+        <div key={groupIndex} className="bg-gray-800/50 backdrop-blur-lg rounded-lg overflow-hidden border border-white/10">
+          {/* Shift Header with Icon */}
+          <div className="p-4 bg-gray-800/80 border-b border-white/10">
+            <div className="flex items-center justify-between">
+              <div className="space-y-1">
+                <div className="flex items-center gap-3">
+                  <span className={`flex items-center gap-2 text-lg font-bold ${
+                    shiftGroup.shiftType === 'morning' ? 'text-yellow-400' :
+                    shiftGroup.shiftType === 'afternoon' ? 'text-orange-400' :
+                    'text-blue-400'
+                  }`}>
+                    {shiftGroup.shiftType === 'morning' && <Sun className="h-5 w-5" />}
+                    {shiftGroup.shiftType === 'afternoon' && <Sunset className="h-5 w-5" />}
+                    {shiftGroup.shiftType === 'night' && <Moon className="h-5 w-5" />}
                     {shiftGroup.shiftType.charAt(0).toUpperCase() + shiftGroup.shiftType.slice(1)} Shift
-                  </h3>
-                  <p className="text-sm text-gray-400 mt-1">
-                    {new Date(shiftGroup.startTime).toLocaleString()} - 
-                    {shiftGroup.endTime ? new Date(shiftGroup.endTime).toLocaleString() : 'Ongoing'}
-                  </p>
+                  </span>
+                  <span className="text-sm text-gray-400 font-medium">
+                    {formatDateForGroup(shiftGroup.startTime)}
+                  </span>
+                </div>
+                <div className="text-sm text-gray-500 flex items-center gap-2">
+                  <Clock className="h-4 w-4" />
+                  <span className="font-mono">
+                    {new Date(shiftGroup.startTime).toLocaleTimeString()} - {shiftGroup.endTime ? new Date(shiftGroup.endTime).toLocaleTimeString() : 'Ongoing'}
+                  </span>
                 </div>
               </div>
             </div>
-            
-            <div className="p-4 space-y-4">
-              {shiftGroup.logs.map((log) => (
-                <div
-                  key={log.id}
-                  className={`p-4 rounded-lg border transition-all hover:transform hover:scale-[1.01] shadow-md ${
-                    log.category === 'error' ? 'bg-red-900/20 border-red-700/50' :
-                    log.category === 'downtime' ? 'bg-yellow-900/20 border-yellow-700/50' :
-                    log.category === 'workorder' ? 'bg-blue-900/20 border-blue-700/50' :
-                    log.category === 'data-collection' ? 'bg-purple-900/20 border-purple-700/50' :
-                    log.category === 'shift' ? 'bg-green-900/20 border-green-700/50' :
-                    'bg-white/5 border-white/10'
-                  }`}
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center space-x-3 mb-2">
-                        <span className={`px-2 py-1 text-xs font-semibold rounded-full ${
-                  log.category === 'error' ? 'bg-red-900 text-red-200' :
-                  log.category === 'downtime' ? 'bg-yellow-900 text-yellow-200' :
-                  log.category === 'workorder' ? 'bg-blue-900 text-blue-200' :
-                  log.category === 'data-collection' ? 'bg-purple-900 text-purple-200' :
-                        log.category === 'shift' ? 'bg-green-900 text-green-200' :
-                        'bg-gray-700 text-gray-200'
+          </div>
+
+          {/* Log Entries */}
+          <div className="divide-y divide-gray-700/50">
+            {shiftGroup.logs.map((log) => (
+              <div 
+                key={log.id} 
+                className={`p-3 hover:bg-gray-700/30 transition-colors ${shouldShowExpand(log) ? 'cursor-pointer' : ''} ${expandedLogId === log.id ? 'bg-gray-700/30' : ''}`}
+                onClick={() => shouldShowExpand(log) ? toggleLogExpansion(log.id) : undefined}
+              >
+                <div className="flex items-start gap-4">
+                  {/* Time Column */}
+                  <div className="w-20 shrink-0 pt-1">
+                    <span className="text-sm font-mono text-gray-400">
+                {formatDateTime(log.created_at)}
+                    </span>
+                  </div>
+
+                  {/* Category Badge */}
+                  <div className="w-28 shrink-0 pt-1">
+                    <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${
+                      log.category === 'error' ? 'bg-red-400/10 text-red-400 border border-red-400/20' :
+                      log.category === 'downtime' ? 'bg-yellow-400/10 text-yellow-400 border border-yellow-400/20' :
+                      log.category === 'workorder' ? 'bg-blue-400/10 text-blue-400 border border-blue-400/20' :
+                      log.category === 'data-collection' ? 'bg-purple-400/10 text-purple-400 border border-purple-400/20' :
+                      log.category === 'shift' ? 'bg-green-400/10 text-green-400 border border-green-400/20' :
+                      'bg-gray-400/10 text-gray-400 border border-gray-400/20'
                 }`}>
-                  {log.category}
+                      {log.category === 'data-collection' ? 'Data' : 
+                       log.category.charAt(0).toUpperCase() + log.category.slice(1)}
                 </span>
-                        <span className="text-sm text-gray-400">
-                          {formatDateTime(log.created_at)}
-                        </span>
-                      </div>
-                      
+                  </div>
+
+                  {/* Main Content */}
+                  <div className="flex-1 min-w-0 space-y-1">
                 {editingLog?.id === log.id ? (
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="text"
-                      defaultValue={log.description}
-                            className="flex-1 rounded-lg bg-white/5 border-0 text-white px-4 py-2 focus:ring-2 focus:ring-indigo-500"
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          handleSaveEdit(log, e.currentTarget.value);
-                        } else if (e.key === 'Escape') {
-                          setEditingLog(null);
-                        }
-                      }}
+                      <form onSubmit={handleSaveEdit} className="space-y-2" onClick={e => e.stopPropagation()}>
+                        <textarea
+                          value={editedDescription}
+                          onChange={(e) => setEditedDescription(e.target.value)}
+                          className="w-full px-3 py-2 bg-gray-900/50 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                          rows={3}
                       autoFocus
                     />
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="submit"
+                            className="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium rounded transition-colors"
+                          >
+                            Save
+                          </button>
                     <button
-                      onClick={() => setEditingLog(null)}
-                            className="text-gray-400 hover:text-white transition-colors"
+                            type="button"
+                            onClick={handleCancelEdit}
+                            className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white text-sm font-medium rounded transition-colors"
                     >
-                            <X className="h-4 w-4" />
+                      Cancel
                     </button>
                   </div>
+                      </form>
                 ) : (
-                        <p className="text-white">{log.description}</p>
-                      )}
-
-                      {/* Attachments */}
-                    {log.attachments && log.attachments.length > 0 && (
-                      <div className="mt-2 space-y-1">
-                        {log.attachments.map((attachment) => (
-                          <div key={attachment.id} className="flex items-center space-x-2 text-sm">
-                            <Paperclip className="h-4 w-4 text-gray-400" />
-                            <span className="text-gray-400">{attachment.file_name}</span>
-                            <span className="text-gray-500">({formatFileSize(attachment.file_size)})</span>
-                            <div className="flex items-center space-x-2">
+                      <>
+                        {/* Status badges and machine parameters row */}
+                        <div className="flex items-center flex-wrap gap-2">
+                          {/* Status badges for downtime and workorder */}
+                          {(log.category === 'downtime' || log.category === 'workorder') && (
+                            <div className="relative status-menu">
                               <button
-                                onClick={() => handleView(attachment.file_path)}
-                                  className="text-blue-400 hover:text-blue-300 transition-colors"
-                                title="View"
+                                onClick={(e) => handleStatusClick(e, log.id)}
+                                className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                                  getStatusStyle(log.category === 'downtime' 
+                                    ? (log.case_status || 'open')
+                                    : (log.workorder_status || 'open'))
+                                }`}
+                              >
+                                {log.category === 'downtime' 
+                                  ? (log.case_status || 'open')
+                                  : (log.workorder_status || 'open')}
+                              </button>
+                              
+                              {activeStatusId === log.id && (
+                                <div className="absolute z-10 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+                                  <div className="relative w-32 h-32">
+                                    {STATUS_OPTIONS.map((option, index) => {
+                                      const angle = (index * 360) / STATUS_OPTIONS.length;
+                                      const isActive = (log.category === 'downtime' 
+                                        ? (log.case_status || 'open')
+                                        : (log.workorder_status || 'open')) === option.value;
+                                      
+                                      return (
+                                        <button
+                                          key={option.value}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleStatusChange(
+                                              log.id,
+                                              option.value,
+                                              log.category === 'downtime' ? 'case_status' : 'workorder_status'
+                                            );
+                                          }}
+                                          className={`
+                                            absolute w-8 h-8 rounded-full 
+                                            transform -translate-x-1/2 -translate-y-1/2
+                                            transition-all duration-300 ease-in-out
+                                            ${option.color} hover:scale-110
+                                            flex items-center justify-center
+                                            text-white text-xs font-medium
+                                            shadow-lg hover:shadow-xl
+                                            ${isActive ? 'scale-110 ring-2 ring-white' : 'opacity-80'}
+                                            ${activeStatusId === log.id ? 'animate-in' : 'animate-out'}
+                                          `}
+                                          style={{
+                                            left: `${Math.cos((angle - 90) * (Math.PI / 180)) * 48 + 64}px`,
+                                            top: `${Math.sin((angle - 90) * (Math.PI / 180)) * 48 + 64}px`,
+                                            animation: `${activeStatusId === log.id ? 'fadeIn' : 'fadeOut'} 0.3s ease-in-out`,
+                                            animationDelay: `${index * 0.1}s`
+                                          }}
+                                        >
+                                          {option.label.split(' ')[0]}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          
+                          {/* Case/Workorder numbers */}
+                          {log.case_number && (
+                            <span className="text-xs text-gray-400 font-mono bg-gray-700/30 px-2 py-0.5 rounded">
+                              Case #{log.case_number}
+                            </span>
+                          )}
+                          {log.workorder_number && (
+                            <span className="text-xs text-gray-400 font-mono bg-gray-700/30 px-2 py-0.5 rounded">
+                              WO #{log.workorder_number}
+                            </span>
+                          )}
+                          
+                          {/* Machine parameters for data collection */}
+                          {log.category === 'data-collection' && (
+                            <div className="flex flex-wrap gap-2 text-xs text-gray-400 font-mono">
+                              <span className="bg-gray-700/30 px-2 py-0.5 rounded">MC: {log.mc_setpoint}</span>
+                              <span className="bg-gray-700/30 px-2 py-0.5 rounded">Yoke: {log.yoke_temperature}°C</span>
+                              <span className="bg-gray-700/30 px-2 py-0.5 rounded">Arc: {log.arc_current}A</span>
+                              <span className="bg-gray-700/30 px-2 py-0.5 rounded">Fil: {log.filament_current}A</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Description */}
+                        <p className={`text-sm text-white ${expandedLogId === log.id ? 'whitespace-pre-wrap break-words' : 'truncate'}`}>
+                          {log.description}
+                        </p>
+
+                        {/* Expand indicator */}
+                        {shouldShowExpand(log) && !expandedLogId && (
+                          <span className="text-xs text-gray-500">Click to expand</span>
+                        )}
+                        
+                        {/* Attachments in expanded view */}
+                        {expandedLogId === log.id && log.attachments && log.attachments.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            {log.attachments.map((attachment) => (
+                              <div key={attachment.id} className="flex items-center gap-2 text-sm bg-gray-700/30 p-2 rounded">
+                                <Paperclip className="h-4 w-4 text-gray-400" />
+                                <span className="text-gray-300 truncate">{attachment.file_name}</span>
+                                <span className="text-gray-500 shrink-0">({formatFileSize(attachment.file_size)})</span>
+                                <div className="flex items-center gap-1 ml-auto">
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleView(attachment.file_path);
+                                    }}
+                                    className="p-1 text-gray-400 hover:text-white transition-colors hover:bg-white/10 rounded"
+                                    title="View"
                               >
                                 <ExternalLink className="h-4 w-4" />
                               </button>
                               <button
-                                onClick={() => handleDownload(attachment.file_path, attachment.file_name)}
-                                  className="text-green-400 hover:text-green-300 transition-colors"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDownload(attachment.file_path, attachment.file_name);
+                                    }}
+                                    className="p-1 text-gray-400 hover:text-white transition-colors hover:bg-white/10 rounded"
                                 title="Download"
                               >
                                 <Download className="h-4 w-4" />
@@ -621,79 +1005,34 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
                         ))}
                       </div>
                     )}
-
-                      {/* Additional Details */}
-                      {(log.case_number || log.workorder_number || log.mc_setpoint) && (
-                        <div className="mt-3 grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
-                          {log.case_number && (
-                            <div className="bg-white/5 rounded-lg p-2">
-                              <span className="text-gray-400">Case:</span>
-                              <div className="text-white">{log.case_number}</div>
-                              <div className="text-gray-400">{log.case_status}</div>
+                      </>
+                )}
                   </div>
-                )}
-                {log.workorder_number && (
-                            <div className="bg-white/5 rounded-lg p-2">
-                              <span className="text-gray-400">Work Order:</span>
-                              <div className="text-white">{log.workorder_number}</div>
-                              <div className="text-gray-400">{log.workorder_status}</div>
-                            </div>
-                )}
-                {log.mc_setpoint && (
-                            <>
-                              <div className="bg-white/5 rounded-lg p-2">
-                                <span className="text-gray-400">MC Setpoint:</span>
-                                <div className="text-white">{log.mc_setpoint}</div>
-                              </div>
-                              <div className="bg-white/5 rounded-lg p-2">
-                                <span className="text-gray-400">Yoke Temp:</span>
-                                <div className="text-white">{log.yoke_temperature}°C</div>
-                              </div>
-                              <div className="bg-white/5 rounded-lg p-2">
-                                <span className="text-gray-400">Arc Current:</span>
-                                <div className="text-white">{log.arc_current}A</div>
-                              </div>
-                              <div className="bg-white/5 rounded-lg p-2">
-                                <span className="text-gray-400">Filament:</span>
-                                <div className="text-white">{log.filament_current}A</div>
-                              </div>
-                              <div className="bg-white/5 rounded-lg p-2">
-                                <span className="text-gray-400">PIE Width:</span>
-                                <div className="text-white">{log.pie_width}</div>
-                              </div>
-                              <div className="bg-white/5 rounded-lg p-2">
-                                <span className="text-gray-400">P2E Width:</span>
-                                <div className="text-white">{log.p2e_width}</div>
-                              </div>
-                            </>
-                          )}
-                  </div>
-                )}
-                    </div>
 
-                    <div className="flex items-center space-x-2">
+                  {/* Actions */}
+                  <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
                 <button 
-                        className="p-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
-                  onClick={() => handleEdit(log)}
-                        title="Edit"
+                      onClick={(e) => handleEdit(log, e)}
+                      className="p-1 text-gray-400 hover:text-white transition-colors hover:bg-white/10 rounded"
                 >
                   <Edit2 className="h-4 w-4" />
                 </button>
                 <button 
-                        className="p-2 bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors"
-                  onClick={() => handleDelete(log)}
-                        title="Delete"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDelete(log.id);
+                      }}
+                      className="p-1 text-gray-400 hover:text-red-400 transition-colors hover:bg-white/10 rounded"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
-                    </div>
                   </div>
                 </div>
+              </div>
           ))}
-            </div>
           </div>
-        ))}
-      </div>
+        </div>
+      ))}
     </div>
   );
 };

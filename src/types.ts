@@ -51,7 +51,7 @@ export interface LogEntry {
 
 export type LogCategory = 'general' | 'error' | 'downtime' | 'workorder' | 'data-collection' | 'shift';
 
-export type Status = 'open' | 'in-progress' | 'closed' | 'pending';
+export type Status = 'open' | 'in_progress' | 'closed' | 'pending';
 
 export interface Attachment {
   id: string;
