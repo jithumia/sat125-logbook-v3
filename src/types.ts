@@ -19,7 +19,7 @@ export interface ActiveShift {
   salesforce_number: string;
 }
 
-export type ShiftType = 'morning' | 'afternoon' | 'night';
+export type ShiftType = 'morning' | 'afternoon' | 'night' | 'data-mc' | 'data-sc';
 
 export interface SearchFilters {
   startDate: string;
@@ -46,6 +46,18 @@ export interface LogEntry {
   filament_current?: number;
   pie_width?: number;
   p2e_width?: number;
+  pie_x_width?: number;
+  p2e_y_width?: number;
+  removed_source_number?: number;
+  removed_filament_current?: number;
+  removed_arc_current?: number;
+  removed_filament_counter?: number;
+  inserted_source_number?: number;
+  inserted_filament_current?: number;
+  inserted_arc_current?: number;
+  inserted_filament_counter?: number;
+  filament_hours?: number;
+  engineers?: string[];
   attachments?: Attachment[];
 }
 

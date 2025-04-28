@@ -58,10 +58,18 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
   const [criticalEvents, setCriticalEvents] = useState<LogEntry[]>([]);
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
   const [activeStatusId, setActiveStatusId] = useState<string | null>(null);
+  const [engineerMap, setEngineerMap] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetchLogs();
     fetchCriticalEvents();
+    supabase.from('engineers').select('id, name').then(({ data }) => {
+      if (data) {
+        const map: Record<string, string> = {};
+        data.forEach(e => { map[e.id] = e.name; });
+        setEngineerMap(map);
+      }
+    });
 
     // Subscribe to real-time changes
     const channel = supabase.channel('log-updates');
@@ -228,8 +236,49 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
                    (shiftDesc.includes('shift started by') && shiftDesc.includes(keyword)) || // Match engineer name in start entry
                    (shiftDesc.includes('shift ended by') && shiftDesc.includes(keyword)); // Match engineer name in end entry
           }
-          
-          // For non-shift entries, check description and category
+
+          // For Main Coil Tuning (data-mc), search all relevant fields
+          if ((log.category as string) === 'data-mc') {
+            return [
+              log.description,
+              log.mc_setpoint,
+              log.yoke_temperature,
+              log.arc_current,
+              log.filament_current,
+              log.pie_width,
+              log.p2e_width,
+              log.pie_x_width,
+              log.p2e_y_width
+            ].some(val => val !== undefined && val !== null && val.toString().toLowerCase().includes(keyword));
+          }
+
+          // For Source Change (data-sc), search all relevant fields
+          if ((log.category as string) === 'data-sc') {
+            // Engineer names
+            const engineerNames = log.engineers && Array.isArray(log.engineers) && engineerMap
+              ? log.engineers.map(id => engineerMap[id] || id).join(', ').toLowerCase()
+              : '';
+            return [
+              log.description,
+              log.removed_source_number,
+              log.removed_filament_current,
+              log.removed_arc_current,
+              log.removed_filament_counter,
+              log.inserted_source_number,
+              log.inserted_filament_current,
+              log.inserted_arc_current,
+              log.inserted_filament_counter,
+              log.workorder_number,
+              log.case_number,
+              engineerNames,
+              // Filament hours (calculated)
+              (typeof log.inserted_filament_counter === 'number' && typeof log.removed_filament_counter === 'number')
+                ? (log.inserted_filament_counter - log.removed_filament_counter).toFixed(2)
+                : ''
+            ].some(val => val !== undefined && val !== null && val.toString().toLowerCase().includes(keyword));
+          }
+
+          // For other entries, check description and category
           return (log.description && log.description.toLowerCase().includes(keyword)) ||
                  (log.category && log.category.toLowerCase().includes(keyword));
         })
@@ -248,7 +297,7 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     }
 
     setLogs(filteredGroups);
-  }, [searchFilters.keyword, searchFilters.category, rawLogs]);
+  }, [searchFilters.keyword, searchFilters.category, rawLogs, engineerMap]);
 
   const fetchCriticalEvents = async () => {
     try {
@@ -485,19 +534,21 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
         textContent += `Description: ${log.description}\n`;
         
         // Add additional details if they exist
-        if (log.case_number || log.workorder_number || log.mc_setpoint) {
+        if (log.case_number && (log.category as string) !== 'data-sc' && log.case_number) {
           textContent += 'Details:\n';
-          if (log.case_number) textContent += `- Case: ${log.case_number} (${log.case_status || 'N/A'})\n`;
-          if (log.workorder_number) textContent += `- Work Order: ${log.workorder_number} (${log.workorder_status || 'N/A'})\n`;
-          if (log.mc_setpoint) {
-            textContent += '- Machine Parameters:\n';
-            textContent += `  * MC Setpoint: ${log.mc_setpoint}\n`;
-            textContent += `  * Yoke Temp: ${log.yoke_temperature}°C\n`;
-            textContent += `  * Arc Current: ${log.arc_current}A\n`;
-            textContent += `  * Filament: ${log.filament_current}A\n`;
-            textContent += `  * PIE Width: ${log.pie_width}\n`;
-            textContent += `  * P2E Width: ${log.p2e_width}\n`;
-          }
+          textContent += `- Case: ${log.case_number} (${log.case_status || 'N/A'})\n`;
+        }
+        if (log.workorder_number && (log.category as string) !== 'data-sc' && log.workorder_number) {
+          textContent += `- Work Order: ${log.workorder_number} (${log.workorder_status || 'N/A'})\n`;
+        }
+        if (log.mc_setpoint && (log.category as string) === 'data-mc') {
+          textContent += '- Machine Parameters:\n';
+          textContent += `  * MC Setpoint: ${log.mc_setpoint}\n`;
+          textContent += `  * Yoke Temp: ${log.yoke_temperature}°C\n`;
+          textContent += `  * Arc Current: ${log.arc_current}A\n`;
+          textContent += `  * Filament: ${log.filament_current}A\n`;
+          textContent += `  * PIE Width: ${log.pie_width}\n`;
+          textContent += `  * P2E Width: ${log.p2e_width}\n`;
         }
 
         // Add attachments if they exist
@@ -834,11 +885,15 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
                       log.category === 'error' ? 'bg-red-400/10 text-red-400 border border-red-400/20' :
                       log.category === 'downtime' ? 'bg-yellow-400/10 text-yellow-400 border border-yellow-400/20' :
                       log.category === 'workorder' ? 'bg-blue-400/10 text-blue-400 border border-blue-400/20' :
-                      log.category === 'data-collection' ? 'bg-purple-400/10 text-purple-400 border border-purple-400/20' :
+                      (log.category as string) === 'data-mc' ? 'bg-purple-400/10 text-purple-400 border border-purple-400/20' :
+                      (log.category as string) === 'data-sc' ? 'bg-purple-400/10 text-purple-400 border border-purple-400/20' :
+                      (log.category as string) === 'data-collection' ? 'bg-purple-400/10 text-purple-400 border border-purple-400/20' :
                       log.category === 'shift' ? 'bg-green-400/10 text-green-400 border border-green-400/20' :
                       'bg-gray-400/10 text-gray-400 border border-gray-400/20'
                 }`}>
-                      {log.category === 'data-collection' ? 'Data' : 
+                      {log.category === 'data-collection' ? 'Data' :
+                       (log.category as string) === 'data-mc' ? 'Main Coil Tuning' :
+                       (log.category as string) === 'data-sc' ? 'Source Change' :
                        log.category.charAt(0).toUpperCase() + log.category.slice(1)}
                 </span>
                   </div>
@@ -939,24 +994,89 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
                           )}
                           
                           {/* Case/Workorder numbers */}
-                          {log.case_number && (
+                          {log.case_number && (log.category as string) !== 'data-sc' && (
                             <span className="text-xs text-gray-400 font-mono bg-gray-700/30 px-2 py-0.5 rounded">
                               Case #{log.case_number}
                             </span>
                           )}
-                          {log.workorder_number && (
+                          {log.workorder_number && (log.category as string) !== 'data-sc' && (
                             <span className="text-xs text-gray-400 font-mono bg-gray-700/30 px-2 py-0.5 rounded">
                               WO #{log.workorder_number}
                             </span>
                           )}
                           
                           {/* Machine parameters for data collection */}
-                          {log.category === 'data-collection' && (
-                            <div className="flex flex-wrap gap-2 text-xs text-gray-400 font-mono">
-                              <span className="bg-gray-700/30 px-2 py-0.5 rounded">MC: {log.mc_setpoint}</span>
-                              <span className="bg-gray-700/30 px-2 py-0.5 rounded">Yoke: {log.yoke_temperature}°C</span>
-                              <span className="bg-gray-700/30 px-2 py-0.5 rounded">Arc: {log.arc_current}A</span>
-                              <span className="bg-gray-700/30 px-2 py-0.5 rounded">Fil: {log.filament_current}A</span>
+                          {((log.category as string) === 'data-mc' || (log.category as string) === 'data-sc') && (
+                            <div className="bg-gray-800/60 rounded-lg p-3 mt-2 w-fit min-w-[320px]">
+                              {(log.category as string) === 'data-mc' && (
+                                <>
+                                  <div className="mb-2">
+                                    <h5 className="text-xs font-bold text-indigo-300 mb-1">Main Coil Tuning Data</h5>
+                                    <div className="flex flex-wrap gap-4 text-xs text-gray-200">
+                                      <span>Main coil setpoint: <b>{log.mc_setpoint ?? '—'}</b> A</span>
+                                      <span>Yoke Temp: <b>{log.yoke_temperature ?? '—'}</b> °C</span>
+                                      <span>Filament Current: <b>{log.filament_current ?? '—'}</b> A</span>
+                                      <span>Arc Current: <b>{log.arc_current ?? '—'}</b> mA</span>
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <h5 className="text-xs font-bold text-indigo-300 mb-1">Beam Data</h5>
+                                    <div className="flex flex-wrap gap-4 text-xs text-gray-200">
+                                      <span>PIE X width: <b>{log.pie_width ?? '—'}</b> mm</span>
+                                      <span>PIE Y width: <b>{log.p2e_width ?? '—'}</b> mm</span>
+                                      <span>P2E X width: <b>{log.pie_x_width ?? '—'}</b> mm</span>
+                                      <span>P2E Y width: <b>{log.p2e_y_width ?? '—'}</b> mm</span>
+                                    </div>
+                                  </div>
+                                </>
+                              )}
+                              {(log.category as string) === 'data-sc' && (
+                                <>
+                                  <div className="mb-2">
+                                    <h5 className="text-xs font-bold text-indigo-300 mb-1">Removed Source Data</h5>
+                                    <div className="flex flex-wrap gap-4 text-xs text-gray-200">
+                                      <span>Source #: <b>{log.removed_source_number ?? '—'}</b></span>
+                                      <span>Filament Current: <b>{log.removed_filament_current ?? '—'}</b> A</span>
+                                      <span>Arc Current: <b>{log.removed_arc_current ?? '—'}</b> mA</span>
+                                      <span>Filament Counter: <b>{log.removed_filament_counter ?? '—'}</b></span>
+                                    </div>
+                                  </div>
+                                  <div className="mb-2">
+                                    <h5 className="text-xs font-bold text-indigo-300 mb-1">Inserted Source Data</h5>
+                                    <div className="flex flex-wrap gap-4 text-xs text-gray-200">
+                                      <span>Source #: <b>{log.inserted_source_number ?? '—'}</b></span>
+                                      <span>Filament Current: <b>{log.inserted_filament_current ?? '—'}</b> A</span>
+                                      <span>Arc Current: <b>{log.inserted_arc_current ?? '—'}</b> mA</span>
+                                      <span>Filament Counter: <b>{log.inserted_filament_counter ?? '—'}</b></span>
+                                    </div>
+                                  </div>
+                                  <div className="mb-2 flex flex-wrap items-center gap-6">
+                                    <div>
+                                      <h5 className="text-xs font-bold text-indigo-300 mb-1">Filament Hours</h5>
+                                      <span className="text-xs text-gray-200">
+                                        {typeof log.inserted_filament_counter === 'number' && typeof log.removed_filament_counter === 'number'
+                                          ? (log.inserted_filament_counter - log.removed_filament_counter).toFixed(2)
+                                          : '—'}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <h5 className="text-xs font-bold text-indigo-300 mb-1">Svmx / Pridex</h5>
+                                      <div className="flex flex-wrap gap-4 text-xs text-gray-200">
+                                        {log.workorder_number && <span>WO #: <b>{log.workorder_number}</b></span>}
+                                        {log.case_number && <span>Case #: <b>{log.case_number}</b></span>}
+                                      </div>
+                                    </div>
+                                    {log.engineers && log.engineers.length > 0 && (
+                                      <div>
+                                        <h5 className="text-xs font-bold text-indigo-300 mb-1">Engineers</h5>
+                                        <span className="text-xs text-gray-200">
+                                          {log.engineers.map(id => engineerMap[id] || id).slice(0,2).join(', ')}
+                                        </span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </>
+                              )}
                             </div>
                           )}
                         </div>
@@ -1017,15 +1137,18 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
                 >
                   <Edit2 className="h-4 w-4" />
                 </button>
-                <button 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDelete(log.id);
-                      }}
-                      className="p-1 text-gray-400 hover:text-red-400 transition-colors hover:bg-white/10 rounded"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
+                {/* Only show delete button if not a shift end entry */}
+                {!(log.category === 'shift' && log.description && log.description.toLowerCase().includes('shift ended')) && (
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelete(log.id);
+                    }}
+                    className="p-1 text-gray-400 hover:text-red-400 transition-colors hover:bg-white/10 rounded"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                )}
                   </div>
                 </div>
               </div>

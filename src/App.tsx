@@ -698,6 +698,71 @@ function App() {
     />
   ), []);
 
+  // Add a helper to restore active shift if a 'shift ended' log is deleted
+  const restoreActiveShiftIfNeeded = async () => {
+    // Check if there is no active shift
+    const { data: activeShifts, error: activeError } = await supabase
+      .from('active_shifts')
+      .select('*')
+      .order('started_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (activeError) return;
+    if (activeShifts) return; // Already active
+
+    // Find the last 'shift started' log
+    const { data: startLog, error: startError } = await supabase
+      .from('log_entries')
+      .select('*')
+      .eq('category', 'shift')
+      .ilike('description', '%shift started%')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+    if (startError || !startLog) return;
+
+    // Check if there is a corresponding 'shift ended' log after this
+    const { data: endLog, error: endError } = await supabase
+      .from('log_entries')
+      .select('*')
+      .eq('category', 'shift')
+      .eq('shift_type', startLog.shift_type)
+      .gt('created_at', startLog.created_at)
+      .ilike('description', '%shift ended%')
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (endError) return;
+    if (endLog) return; // There is an end log, so don't restore
+
+    // Restore the active shift
+    await supabase.from('active_shifts').insert({
+      shift_type: startLog.shift_type,
+      started_by: startLog.user_id,
+      salesforce_number: startLog.description.match(/SF#: (.*?)\)/)?.[1] || '',
+      started_at: startLog.created_at
+    });
+    // Re-fetch active shift
+    await fetchActiveShift();
+  };
+
+  // Patch the log deletion handler to call restoreActiveShiftIfNeeded after deletion
+  const handleDeleteLogEntry = async (logId: string) => {
+    try {
+      // Delete the log entry
+      const { error } = await supabase.from('log_entries').delete().eq('id', logId);
+      if (error) throw error;
+      // If it was a shift ended log, try to restore active shift
+      await restoreActiveShiftIfNeeded();
+      // Refresh logs and active shift
+      await fetchRecentLogs();
+      await fetchActiveShift();
+      toast.success('Log entry deleted');
+    } catch (error) {
+      toast.error('Failed to delete log entry');
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-indigo-900 flex items-center justify-center">
