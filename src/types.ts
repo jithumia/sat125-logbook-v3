@@ -31,23 +31,24 @@ export interface SearchFilters {
 
 export interface LogEntry {
   id: string;
-  shift_type: ShiftType;
-  category: LogCategory;
-  description: string;
   created_at: string;
-  user_id: string;
+  description: string;
+  category: LogCategory;
+  shift_type: ShiftType;
   case_number?: string;
   case_status?: Status;
   workorder_number?: string;
   workorder_status?: Status;
+  // Main Coil Tuning Data
   mc_setpoint?: number;
   yoke_temperature?: number;
   arc_current?: number;
   filament_current?: number;
-  pie_width?: number;
-  p2e_width?: number;
-  pie_x_width?: number;
+  p1e_x_width?: number;
+  p1e_y_width?: number;
+  p2e_x_width?: number;
   p2e_y_width?: number;
+  // Source Change Data
   removed_source_number?: number;
   removed_filament_current?: number;
   removed_arc_current?: number;
@@ -57,11 +58,15 @@ export interface LogEntry {
   inserted_arc_current?: number;
   inserted_filament_counter?: number;
   filament_hours?: number;
+  // Additional fields
+  svmx_number?: string;
+  pridex_number?: string;
   engineers?: string[];
   attachments?: Attachment[];
+  user_id?: string;
 }
 
-export type LogCategory = 'general' | 'error' | 'downtime' | 'workorder' | 'data-collection' | 'shift';
+export type LogCategory = 'general' | 'error' | 'downtime' | 'workorder' | 'data-mc' | 'data-sc' | 'shift';
 
 export type Status = 'open' | 'in_progress' | 'closed' | 'pending';
 

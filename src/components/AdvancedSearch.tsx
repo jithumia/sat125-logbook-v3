@@ -8,7 +8,7 @@ interface AdvancedSearchProps {
   onReset: () => void;
 }
 
-const categories: LogCategory[] = ['error', 'downtime', 'workorder', 'data-collection', 'general'];
+const categories: LogCategory[] = ['error', 'downtime', 'workorder', 'data-mc', 'data-sc', 'general'];
 
 const AdvancedSearch: React.FC<AdvancedSearchProps> = ({
   filters,

@@ -26,65 +26,120 @@ interface SuggestionCache {
   };
 }
 
+interface ValidationErrors {
+  [key: string]: boolean;
+}
+
 interface FormState {
   category: LogCategory;
   description: string;
-  mcSetpoint: string;
-  yokeTemperature: string;
-  arcCurrent: string;
-  filamentCurrent: string;
-  pieWidth: string;
-  p2eWidth: string;
-  pieXWidth: string;
-  p2eYWidth: string;
-  removedSourceNumber: string;
-  removedFilamentCurrent: string;
-  removedArcCurrent: string;
-  removedFilamentCounter: string;
-  insertedSourceNumber: string;
-  insertedFilamentCurrent: string;
-  insertedArcCurrent: string;
-  insertedFilamentCounter: string;
-  workorderNumber: string;
-  caseNumber: string;
-  caseStatus?: Status;
-  workorderStatus?: Status;
-  engineers: string[];
+  shift_type: ShiftType;
+  case_number?: string;
+  case_status?: Status;
+  workorder_number?: string;
+  workorder_status?: Status;
+  // Main Coil Tuning Data
+  mc_setpoint?: number;
+  yoke_temperature?: number;
+  arc_current?: number;
+  filament_current?: number;
+  p1e_x_width?: number;
+  p1e_y_width?: number;
+  p2e_x_width?: number;
+  p2e_y_width?: number;
+  // Source Change Data
+  removed_source_number?: number;
+  removed_filament_current?: number;
+  removed_arc_current?: number;
+  removed_filament_counter?: number;
+  inserted_source_number?: number;
+  inserted_filament_current?: number;
+  inserted_arc_current?: number;
+  inserted_filament_counter?: number;
+  filament_hours?: number;
+  engineers?: string[];
 }
 
-const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => {
-  const [formState, setFormState] = useState<FormState>({
-    category: 'general',
+const initialState: FormState = {
+  category: 'general',
     description: '',
-    mcSetpoint: '748.40',
-    yokeTemperature: '35.70',
-    arcCurrent: '75',
-    filamentCurrent: '175',
-    pieWidth: '1.50',
-    p2eWidth: '1.35',
-    pieXWidth: '14.50',
-    p2eYWidth: '18.00',
-    removedSourceNumber: '1',
-    removedFilamentCurrent: '175',
-    removedArcCurrent: '70',
-    removedFilamentCounter: '',
-    insertedSourceNumber: '1',
-    insertedFilamentCurrent: '175',
-    insertedArcCurrent: '70',
-    insertedFilamentCounter: '',
-    workorderNumber: '',
-    caseNumber: '',
-    caseStatus: 'open',
-    workorderStatus: 'open',
-    engineers: [],
-  });
+  shift_type: 'morning',
+  // Main Coil Tuning Data
+  mc_setpoint: undefined,
+  yoke_temperature: undefined,
+  arc_current: undefined,
+  filament_current: undefined,
+  p1e_x_width: undefined,
+  p1e_y_width: undefined,
+  p2e_x_width: undefined,
+  p2e_y_width: undefined,
+  // Source Change Data
+  removed_source_number: undefined,
+  removed_filament_current: undefined,
+  removed_arc_current: undefined,
+  removed_filament_counter: undefined,
+  inserted_source_number: undefined,
+  inserted_filament_current: undefined,
+  inserted_arc_current: undefined,
+  inserted_filament_counter: undefined,
+  filament_hours: undefined,
+  engineers: [],
+};
 
+const validateSourceChangeData = (formState: FormState): ValidationErrors => {
+  const errors: ValidationErrors = {};
+  
+  if (formState.category === 'data-sc') {
+    // Removed source data validation
+    errors.removed_source_number = !formState.removed_source_number;
+    errors.removed_filament_current = !formState.removed_filament_current;
+    errors.removed_arc_current = !formState.removed_arc_current;
+    errors.removed_filament_counter = !formState.removed_filament_counter;
+    
+    // Inserted source data validation
+    errors.inserted_source_number = !formState.inserted_source_number;
+    errors.inserted_filament_current = !formState.inserted_filament_current;
+    errors.inserted_arc_current = !formState.inserted_arc_current;
+    errors.inserted_filament_counter = !formState.inserted_filament_counter;
+    
+    // Engineers validation
+    errors.engineers = !formState.engineers || formState.engineers.length === 0;
+    
+    // Work order and case number validation
+    errors.workorder_number = !formState.workorder_number;
+    errors.case_number = !formState.case_number;
+  }
+  
+  return errors;
+};
+
+const validateMainCoilData = (formState: FormState): ValidationErrors => {
+  const errors: ValidationErrors = {};
+  
+  if (formState.category === 'data-mc') {
+    errors.mc_setpoint = !formState.mc_setpoint;
+    errors.yoke_temperature = !formState.yoke_temperature;
+    errors.arc_current = !formState.arc_current;
+    errors.filament_current = !formState.filament_current;
+    errors.p1e_x_width = !formState.p1e_x_width;
+    errors.p1e_y_width = !formState.p1e_y_width;
+    errors.p2e_x_width = !formState.p2e_x_width;
+    errors.p2e_y_width = !formState.p2e_y_width;
+  }
+  
+  return errors;
+};
+
+const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => {
+  const [formState, setFormState] = useState<FormState>(initialState);
   const [files, setFiles] = useState<File[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [engineerList, setEngineerList] = useState<Engineer[]>([]);
+  const [validationErrors, setValidationErrors] = useState<ValidationErrors>({});
+  const [showValidationMessage, setShowValidationMessage] = useState(false);
 
   useEffect(() => {
-    if (formState.category === 'data-collection' || (formState.category as string) === 'data-mc' || (formState.category as string) === 'data-sc') {
+    if (formState.category === 'data-mc' || formState.category === 'data-sc') {
       supabase.from('engineers').select('*').then(({ data }) => {
         if (data) setEngineerList(data);
       });
@@ -94,201 +149,73 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!formState.description.trim()) {
-      toast.error('Please enter a description');
-      return;
+    // Validate based on category
+    let errors: ValidationErrors = {};
+    if (formState.category === 'data-sc') {
+      errors = validateSourceChangeData(formState);
+    } else if (formState.category === 'data-mc') {
+      errors = validateMainCoilData(formState);
     }
 
-    if (!activeShift) {
-      toast.error('No active shift found');
+    // Check if there are any errors
+    const hasErrors = Object.values(errors).some(error => error);
+    setValidationErrors(errors);
+    
+    if (hasErrors) {
+      setShowValidationMessage(true);
+      toast.error('Please fill in all required fields');
       return;
     }
 
     setIsSubmitting(true);
 
     try {
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      // Get current user session
+      const { data: { session } } = await supabase.auth.getSession();
       
-      if (sessionError) throw sessionError;
-      if (!session) {
-        toast.error('No active session found');
-        setIsSubmitting(false);
+      if (!session?.user) {
+        toast.error('You must be logged in to create entries');
         return;
       }
 
-      // Create the log entry
-      const logEntry = {
-        shift_type: activeShift.shift_type,
-        category: formState.category,
-        description: formState.description.trim(),
-        user_id: session.user.id,
-        ...(formState.category === 'downtime' ? {
-          case_number: formState.caseNumber.trim(),
-          case_status: formState.caseStatus,
-        } : {}),
-        ...(formState.category === 'workorder' ? {
-          workorder_number: formState.workorderNumber.trim(),
-          workorder_status: formState.workorderStatus,
-        } : {}),
-        ...(formState.category === 'data-collection' ? {
-          mc_setpoint: formState.mcSetpoint ? parseFloat(formState.mcSetpoint) : null,
-          yoke_temperature: formState.yokeTemperature ? parseFloat(formState.yokeTemperature) : null,
-          arc_current: formState.arcCurrent ? parseFloat(formState.arcCurrent) : null,
-          filament_current: formState.filamentCurrent ? parseFloat(formState.filamentCurrent) : null,
-          pie_width: formState.pieWidth ? parseFloat(formState.pieWidth) : null,
-          p2e_width: formState.p2eWidth ? parseFloat(formState.p2eWidth) : null
-        } : {}),
-        ...(formState.category === 'data-mc' ? {
-          mc_setpoint: formState.mcSetpoint ? parseFloat(formState.mcSetpoint) : null,
-          yoke_temperature: formState.yokeTemperature ? parseFloat(formState.yokeTemperature) : null,
-          arc_current: formState.arcCurrent ? parseFloat(formState.arcCurrent) : null,
-          filament_current: formState.filamentCurrent ? parseFloat(formState.filamentCurrent) : null,
-          pie_width: formState.pieWidth ? parseFloat(formState.pieWidth) : null,
-          p2e_width: formState.p2eWidth ? parseFloat(formState.p2eWidth) : null,
-          pie_x_width: formState.pieXWidth ? parseFloat(formState.pieXWidth) : null,
-          p2e_y_width: formState.p2eYWidth ? parseFloat(formState.p2eYWidth) : null
-        } : {}),
-        ...(formState.category === 'data-sc' ? {
-          removed_source_number: formState.removedSourceNumber ? parseInt(formState.removedSourceNumber) : null,
-          removed_filament_current: formState.removedFilamentCurrent ? parseFloat(formState.removedFilamentCurrent) : null,
-          removed_arc_current: formState.removedArcCurrent ? parseFloat(formState.removedArcCurrent) : null,
-          removed_filament_counter: formState.removedFilamentCounter ? parseFloat(formState.removedFilamentCounter) : null,
-          inserted_source_number: formState.insertedSourceNumber ? parseInt(formState.insertedSourceNumber) : null,
-          inserted_filament_current: formState.insertedFilamentCurrent ? parseFloat(formState.insertedFilamentCurrent) : null,
-          inserted_arc_current: formState.insertedArcCurrent ? parseFloat(formState.insertedArcCurrent) : null,
-          inserted_filament_counter: formState.insertedFilamentCounter ? parseFloat(formState.insertedFilamentCounter) : null,
-          workorder_number: formState.workorderNumber.trim(),
-          case_number: formState.caseNumber.trim(),
-          filament_hours: (formState.insertedFilamentCounter && formState.removedFilamentCounter)
-            ? parseFloat(formState.insertedFilamentCounter) - parseFloat(formState.removedFilamentCounter)
-            : null,
-          engineers: formState.engineers,
-        } : {})
-      };
-
-      console.log('Creating log entry:', logEntry);
-
-      // Insert log entry and get the result
-      const { data: newLog, error: logError } = await supabase
+      const { data, error } = await supabase
         .from('log_entries')
-        .insert([logEntry])
-        .select('*')
-        .single();
+        .insert([
+          {
+            ...formState,
+            user_id: session.user.id,
+            // Convert string inputs to numbers for numeric fields
+            mc_setpoint: formState.mc_setpoint ? Number(formState.mc_setpoint) : null,
+            yoke_temperature: formState.yoke_temperature ? Number(formState.yoke_temperature) : null,
+            arc_current: formState.arc_current ? Number(formState.arc_current) : null,
+            filament_current: formState.filament_current ? Number(formState.filament_current) : null,
+            p1e_x_width: formState.p1e_x_width ? Number(formState.p1e_x_width) : null,
+            p1e_y_width: formState.p1e_y_width ? Number(formState.p1e_y_width) : null,
+            p2e_x_width: formState.p2e_x_width ? Number(formState.p2e_x_width) : null,
+            p2e_y_width: formState.p2e_y_width ? Number(formState.p2e_y_width) : null,
+            removed_source_number: formState.removed_source_number ? Number(formState.removed_source_number) : null,
+            removed_filament_current: formState.removed_filament_current ? Number(formState.removed_filament_current) : null,
+            removed_arc_current: formState.removed_arc_current ? Number(formState.removed_arc_current) : null,
+            removed_filament_counter: formState.removed_filament_counter ? Number(formState.removed_filament_counter) : null,
+            inserted_source_number: formState.inserted_source_number ? Number(formState.inserted_source_number) : null,
+            inserted_filament_current: formState.inserted_filament_current ? Number(formState.inserted_filament_current) : null,
+            inserted_arc_current: formState.inserted_arc_current ? Number(formState.inserted_arc_current) : null,
+            inserted_filament_counter: formState.inserted_filament_counter ? Number(formState.inserted_filament_counter) : null,
+            filament_hours: formState.filament_hours ? Number(formState.filament_hours) : null,
+          },
+        ])
+        .select();
 
-      if (logError) {
-        console.error('Error creating log entry:', logError);
-        throw new Error(`Failed to create log entry: ${logError.message}`);
-      }
+      if (error) throw error;
 
-      if (!newLog) {
-        throw new Error('Failed to create log entry: No data returned');
-      }
-
-      // Upload attachments if any
-      if (files.length > 0) {
-        const uploadPromises = files.map(async (file) => {
-          try {
-          const fileExt = file.name.split('.').pop();
-            const fileName = `${newLog.id}_${Date.now()}.${fileExt}`;
-            const filePath = fileName; // Simplified path structure
-
-            console.log('Attempting to upload file:', {
-              fileName,
-              fileType: file.type,
-              fileSize: file.size
-            });
-
-            // Upload file to storage
-            const { data: uploadData, error: uploadError } = await supabase.storage
-            .from('attachments')
-              .upload(filePath, file, {
-                cacheControl: '3600',
-                upsert: true
-              });
-
-            if (uploadError) {
-              console.error('Upload error:', uploadError);
-              throw new Error(`Failed to upload file: ${uploadError.message}`);
-            }
-
-            console.log('File uploaded successfully:', uploadData);
-
-            // Get the public URL
-            const { data } = supabase.storage
-              .from('attachments')
-              .getPublicUrl(filePath);
-
-            // Create attachment record
-          const { error: attachmentError } = await supabase
-            .from('attachments')
-              .insert({
-                log_entry_id: newLog.id,
-              file_name: file.name,
-              file_type: file.type,
-              file_size: file.size,
-              file_path: filePath,
-                public_url: data.publicUrl,
-                user_id: session.user.id
-              });
-
-            if (attachmentError) {
-              console.error('Attachment record error:', attachmentError);
-              // If attachment record fails, delete the uploaded file
-              await supabase.storage
-                .from('attachments')
-                .remove([filePath]);
-              throw new Error(`Failed to create attachment record: ${attachmentError.message}`);
-            }
-
-            return { filePath, fileName: file.name };
-          } catch (error) {
-            console.error('Error processing file:', error);
-            throw error;
-          }
-        });
-
-        try {
-          await Promise.all(uploadPromises);
-          toast.success('Files uploaded successfully');
-        } catch (error) {
-          console.error('File upload process error:', error);
-          toast.error(error instanceof Error ? error.message : 'Failed to upload files');
-          throw error;
-        }
-      }
-
-      // Success - reset form and close
-      toast.success('Entry added successfully');
-      setFormState({
-        category: 'general',
-        description: '',
-        mcSetpoint: '748.40',
-        yokeTemperature: '35.70',
-        arcCurrent: '75',
-        filamentCurrent: '175',
-        pieWidth: '1.50',
-        p2eWidth: '1.35',
-        pieXWidth: '14.50',
-        p2eYWidth: '18.00',
-        removedSourceNumber: '1',
-        removedFilamentCurrent: '175',
-        removedArcCurrent: '70',
-        removedFilamentCounter: '',
-        insertedSourceNumber: '1',
-        insertedFilamentCurrent: '175',
-        insertedArcCurrent: '70',
-        insertedFilamentCounter: '',
-        workorderNumber: '',
-        caseNumber: '',
-        caseStatus: 'open',
-        workorderStatus: 'open',
-        engineers: [],
-      });
-      setFiles([]);
-        onClose();
+      // Reset form and show success message
+      setFormState(initialState);
+      toast.success('Log entry created successfully');
+      onClose();
+      window.location.reload();
     } catch (error) {
-      console.error('Error adding entry:', error);
-      toast.error(error instanceof Error ? error.message : 'Failed to add entry');
+      console.error('Error creating log entry:', error);
+      toast.error('Failed to create log entry');
     } finally {
       setIsSubmitting(false);
     }
@@ -299,9 +226,26 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
       case 'error': return 'bg-red-500/20 text-red-300 border-red-500/30';
       case 'downtime': return 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30';
       case 'workorder': return 'bg-blue-500/20 text-blue-300 border-blue-500/30';
-      case 'data-collection': return 'bg-purple-500/20 text-purple-300 border-purple-500/30';
+      case 'data-mc': return 'bg-purple-500/20 text-purple-300 border-purple-500/30';
+      case 'data-sc': return 'bg-green-500/20 text-green-300 border-green-500/30';
       default: return 'bg-gray-500/20 text-gray-300 border-gray-500/30';
     }
+  };
+
+  const getInputStyle = (fieldName: string) => {
+    const baseStyle = "w-full rounded-lg border-0 px-4 py-2.5 focus:ring-2 focus:ring-indigo-500";
+    const errorStyle = validationErrors[fieldName] 
+      ? "bg-red-500/10 border-red-500 text-red-300 focus:ring-red-500" 
+      : "bg-white/5 text-white";
+    return `${baseStyle} ${errorStyle}`;
+  };
+
+  const getSelectStyle = (fieldName: string) => {
+    const baseStyle = "w-full rounded-lg border px-4 py-2.5 focus:ring-2 focus:ring-indigo-500";
+    const errorStyle = validationErrors[fieldName]
+      ? "bg-gray-800/50 border-red-500 text-red-300 focus:ring-red-500"
+      : "bg-gray-800/50 border-gray-700 text-white";
+    return `${baseStyle} ${errorStyle}`;
   };
 
   return (
@@ -385,8 +329,8 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
                           <label className="block text-sm font-medium text-gray-200 mb-1">Case Number</label>
                           <input
                             type="text"
-                            value={formState.caseNumber}
-                            onChange={e => setFormState({ ...formState, caseNumber: e.target.value })}
+                            value={formState.case_number}
+                            onChange={e => setFormState({ ...formState, case_number: e.target.value })}
                             placeholder="Enter case number..."
                             className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500"
                           />
@@ -398,9 +342,9 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
                               <button
                                 key={status}
                                 type="button"
-                                onClick={() => setFormState({ ...formState, caseStatus: status as Status })}
+                                onClick={() => setFormState({ ...formState, case_status: status as Status })}
                                 className={`px-3 py-1 rounded-full text-xs font-semibold border transition-all
-                                  ${formState.caseStatus === status ?
+                                  ${formState.case_status === status ?
                                     (status === 'open' ? 'bg-green-500/20 text-green-300 border-green-500/30' :
                                      status === 'in_progress' ? 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30' :
                                      status === 'pending' ? 'bg-orange-500/20 text-orange-300 border-orange-500/30' :
@@ -421,8 +365,8 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
                           <label className="block text-sm font-medium text-gray-200 mb-1">Work Order Number</label>
                           <input
                             type="text"
-                            value={formState.workorderNumber}
-                            onChange={e => setFormState({ ...formState, workorderNumber: e.target.value })}
+                            value={formState.workorder_number}
+                            onChange={e => setFormState({ ...formState, workorder_number: e.target.value })}
                             placeholder="Enter work order number..."
                             className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500"
                           />
@@ -434,9 +378,9 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
                               <button
                                 key={status}
                                 type="button"
-                                onClick={() => setFormState({ ...formState, workorderStatus: status as Status })}
+                                onClick={() => setFormState({ ...formState, workorder_status: status as Status })}
                                 className={`px-3 py-1 rounded-full text-xs font-semibold border transition-all
-                                  ${formState.workorderStatus === status ?
+                                  ${formState.workorder_status === status ?
                                     (status === 'open' ? 'bg-green-500/20 text-green-300 border-green-500/30' :
                                      status === 'in_progress' ? 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30' :
                                      status === 'pending' ? 'bg-orange-500/20 text-orange-300 border-orange-500/30' :
@@ -453,39 +397,132 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
 
                     {formState.category === 'data-mc' && (
                       <div className="space-y-6">
-                        <div className="flex items-center text-md font-semibold text-indigo-300 mb-2"><Settings className="mr-2 text-indigo-400 w-6 h-6" /> Main Coil Tuning</div>
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="flex items-center text-md font-semibold text-indigo-300 mb-2">
+                          <Settings className="mr-2 text-indigo-400 w-6 h-6" /> Main Coil Tuning
+                        </div>
+                        <div className="space-y-4">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div>
-                            <label className="block text-sm font-medium text-gray-200 mb-1">Main coil setpoint (A)</label>
-                            <input type="number" step="0.01" min="0" value={formState.mcSetpoint} onChange={e => setFormState({ ...formState, mcSetpoint: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
+                              <label htmlFor="mc_setpoint" className="block text-sm font-medium text-gray-200 mb-1">
+                                Main Coil Setpoint (A)
+                            </label>
+                            <input
+                              type="number"
+                                step="0.001"
+                                id="mc_setpoint"
+                                name="mc_setpoint"
+                                value={formState.mc_setpoint || ''}
+                                onChange={(e) => setFormState({ ...formState, mc_setpoint: e.target.value ? Number(e.target.value) : undefined })}
+                                className={getInputStyle('mc_setpoint')}
+                            />
                           </div>
                           <div>
-                            <label className="block text-sm font-medium text-gray-200 mb-1">Yoke Temperature (°C)</label>
-                            <input type="number" step="0.01" min="0" value={formState.yokeTemperature} onChange={e => setFormState({ ...formState, yokeTemperature: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
+                              <label htmlFor="yoke_temperature" className="block text-sm font-medium text-gray-200 mb-1">
+                                Yoke Temperature (°C)
+                            </label>
+                            <input
+                              type="number"
+                              step="0.1"
+                                id="yoke_temperature"
+                                name="yoke_temperature"
+                                value={formState.yoke_temperature || ''}
+                                onChange={(e) => setFormState({ ...formState, yoke_temperature: e.target.value ? Number(e.target.value) : undefined })}
+                                className={getInputStyle('yoke_temperature')}
+                            />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                              <label htmlFor="arc_current" className="block text-sm font-medium text-gray-200 mb-1">
+                                Arc Current (mA)
+                            </label>
+                            <input
+                              type="number"
+                              step="0.1"
+                                id="arc_current"
+                                name="arc_current"
+                                value={formState.arc_current || ''}
+                                onChange={(e) => setFormState({ ...formState, arc_current: e.target.value ? Number(e.target.value) : undefined })}
+                                className={getInputStyle('arc_current')}
+                            />
                           </div>
                           <div>
-                            <label className="block text-sm font-medium text-gray-200 mb-1">Filament Current (A)</label>
-                            <input type="number" step="1" value={formState.filamentCurrent} onChange={e => setFormState({ ...formState, filamentCurrent: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
+                              <label htmlFor="filament_current" className="block text-sm font-medium text-gray-200 mb-1">
+                                Filament Current (A)
+                            </label>
+                            <input
+                              type="number"
+                              step="0.1"
+                                id="filament_current"
+                                name="filament_current"
+                                value={formState.filament_current || ''}
+                                onChange={(e) => setFormState({ ...formState, filament_current: e.target.value ? Number(e.target.value) : undefined })}
+                                className={getInputStyle('filament_current')}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <label htmlFor="p1e_x_width" className="block text-sm font-medium text-gray-200 mb-1">
+                                P1E X Width (mm)
+                              </label>
+                              <input
+                                type="number"
+                                step="0.001"
+                                id="p1e_x_width"
+                                name="p1e_x_width"
+                                value={formState.p1e_x_width || ''}
+                                onChange={(e) => setFormState({ ...formState, p1e_x_width: e.target.value ? Number(e.target.value) : undefined })}
+                                className={getInputStyle('p1e_x_width')}
+                            />
                           </div>
                           <div>
-                            <label className="block text-sm font-medium text-gray-200 mb-1">Arc Current (mA)</label>
-                            <input type="number" step="1" value={formState.arcCurrent} onChange={e => setFormState({ ...formState, arcCurrent: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
+                              <label htmlFor="p1e_y_width" className="block text-sm font-medium text-gray-200 mb-1">
+                                P1E Y Width (mm)
+                            </label>
+                            <input
+                              type="number"
+                                step="0.001"
+                                id="p1e_y_width"
+                                name="p1e_y_width"
+                                value={formState.p1e_y_width || ''}
+                                onChange={(e) => setFormState({ ...formState, p1e_y_width: e.target.value ? Number(e.target.value) : undefined })}
+                                className={getInputStyle('p1e_y_width')}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <label htmlFor="p2e_x_width" className="block text-sm font-medium text-gray-200 mb-1">
+                                P2E X Width (mm)
+                              </label>
+                              <input
+                                type="number"
+                                step="0.001"
+                                id="p2e_x_width"
+                                name="p2e_x_width"
+                                value={formState.p2e_x_width || ''}
+                                onChange={(e) => setFormState({ ...formState, p2e_x_width: e.target.value ? Number(e.target.value) : undefined })}
+                                className={getInputStyle('p2e_x_width')}
+                            />
                           </div>
                           <div>
-                            <label className="block text-sm font-medium text-gray-200 mb-1">PIE X width (mm)</label>
-                            <input type="number" step="0.1" value={formState.pieWidth} onChange={e => setFormState({ ...formState, pieWidth: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
-                          </div>
-                          <div>
-                            <label className="block text-sm font-medium text-gray-200 mb-1">PIE Y width (mm)</label>
-                            <input type="number" step="0.1" value={formState.p2eWidth} onChange={e => setFormState({ ...formState, p2eWidth: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
-                          </div>
-                          <div>
-                            <label className="block text-sm font-medium text-gray-200 mb-1">P2E X width (mm)</label>
-                            <input type="number" step="0.1" value={formState.pieXWidth} onChange={e => setFormState({ ...formState, pieXWidth: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
-                          </div>
-                          <div>
-                            <label className="block text-sm font-medium text-gray-200 mb-1">P2E Y width (mm)</label>
-                            <input type="number" step="0.1" value={formState.p2eYWidth} onChange={e => setFormState({ ...formState, p2eYWidth: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
+                              <label htmlFor="p2e_y_width" className="block text-sm font-medium text-gray-200 mb-1">
+                                P2E Y Width (mm)
+                            </label>
+                            <input
+                              type="number"
+                                step="0.001"
+                                id="p2e_y_width"
+                                name="p2e_y_width"
+                                value={formState.p2e_y_width || ''}
+                                onChange={(e) => setFormState({ ...formState, p2e_y_width: e.target.value ? Number(e.target.value) : undefined })}
+                                className={getInputStyle('p2e_y_width')}
+                            />
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -493,53 +530,89 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
 
                     {formState.category === 'data-sc' && (
                       <div className="space-y-6">
-                        <div className="flex items-center text-md font-semibold text-indigo-300 mb-2"><RefreshCw className="mr-2 text-green-400 w-6 h-6" /> Removed Source Data</div>
+                        {showValidationMessage && Object.keys(validationErrors).some(key => validationErrors[key]) && (
+                          <div className="bg-red-900/20 border border-red-500/30 rounded-lg p-4">
+                            <p className="text-red-400 text-sm">Please fill in all required fields marked in red</p>
+                          </div>
+                        )}
+                        
+                        <div className="flex items-center text-md font-semibold text-indigo-300 mb-2">
+                          <RefreshCw className="mr-2 text-green-400 w-6 h-6" /> Removed Source Data
+                        </div>
                         <div className="bg-red-900/20 border border-red-700/30 rounded-lg p-4 mb-2">
                           <div className="grid grid-cols-2 gap-4">
                             <div>
-                              <label className="block text-sm font-medium text-gray-200 mb-1">Source Number</label>
-                              <select value={formState.removedSourceNumber} onChange={e => setFormState({ ...formState, removedSourceNumber: e.target.value })} className="w-full rounded-lg bg-gray-800/50 border border-gray-700 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 [&>option]:bg-gray-800 [&>option]:text-white">
+                              <label className={`block text-sm font-medium mb-1 ${validationErrors.removed_source_number ? 'text-red-400' : 'text-gray-200'}`}>
+                                Source Number *
+                              </label>
+                              <select 
+                                value={formState.removed_source_number || ''} 
+                                onChange={e => setFormState({ ...formState, removed_source_number: e.target.value ? Number(e.target.value) : undefined })}
+                                className={getSelectStyle('removed_source_number')}
+                              >
+                                <option value="">Select source</option>
                                 <option value="1">1</option>
                                 <option value="2">2</option>
                                 <option value="3">3</option>
                               </select>
                             </div>
                             <div>
-                              <label className="block text-sm font-medium text-gray-200 mb-1">Filament Current (A)</label>
-                              <input type="number" step="1" value={formState.removedFilamentCurrent} onChange={e => setFormState({ ...formState, removedFilamentCurrent: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
+                              <label className={`block text-sm font-medium mb-1 ${validationErrors.removed_filament_current ? 'text-red-400' : 'text-gray-200'}`}>
+                                Filament Current (A) *
+                              </label>
+                              <input type="number" step="1" value={formState.removed_filament_current || ''} onChange={e => setFormState({ ...formState, removed_filament_current: e.target.value ? Number(e.target.value) : undefined })} className={getInputStyle('removed_filament_current')} />
                             </div>
                             <div>
-                              <label className="block text-sm font-medium text-gray-200 mb-1">Arc Current (mA)</label>
-                              <input type="number" step="1" value={formState.removedArcCurrent} onChange={e => setFormState({ ...formState, removedArcCurrent: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
+                              <label className={`block text-sm font-medium mb-1 ${validationErrors.removed_arc_current ? 'text-red-400' : 'text-gray-200'}`}>
+                                Arc Current (mA) *
+                              </label>
+                              <input type="number" step="1" value={formState.removed_arc_current || ''} onChange={e => setFormState({ ...formState, removed_arc_current: e.target.value ? Number(e.target.value) : undefined })} className={getInputStyle('removed_arc_current')} />
                             </div>
                             <div>
-                              <label className="block text-sm font-medium text-gray-200 mb-1">Filament Counter</label>
-                              <input type="number" step="1" value={formState.removedFilamentCounter} onChange={e => setFormState({ ...formState, removedFilamentCounter: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
+                              <label className={`block text-sm font-medium mb-1 ${validationErrors.removed_filament_counter ? 'text-red-400' : 'text-gray-200'}`}>
+                                Filament Counter *
+                              </label>
+                              <input type="number" step="1" value={formState.removed_filament_counter || ''} onChange={e => setFormState({ ...formState, removed_filament_counter: e.target.value ? Number(e.target.value) : undefined })} className={getInputStyle('removed_filament_counter')} />
                             </div>
                           </div>
                         </div>
-                        <div className="flex items-center text-md font-semibold text-indigo-300 mb-2"><RefreshCw className="mr-2 text-green-400 w-6 h-6" /> Inserted Source Data</div>
+                        <div className="flex items-center text-md font-semibold text-indigo-300 mb-2">
+                          <RefreshCw className="mr-2 text-green-400 w-6 h-6" /> Inserted Source Data
+                        </div>
                         <div className="bg-green-900/20 border border-green-700/30 rounded-lg p-4 mb-2">
                           <div className="grid grid-cols-2 gap-4">
                             <div>
-                              <label className="block text-sm font-medium text-gray-200 mb-1">Source Number</label>
-                              <select value={formState.insertedSourceNumber} onChange={e => setFormState({ ...formState, insertedSourceNumber: e.target.value })} className="w-full rounded-lg bg-gray-800/50 border border-gray-700 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 [&>option]:bg-gray-800 [&>option]:text-white">
+                              <label className={`block text-sm font-medium mb-1 ${validationErrors.inserted_source_number ? 'text-red-400' : 'text-gray-200'}`}>
+                                Source Number *
+                              </label>
+                              <select 
+                                value={formState.inserted_source_number || ''} 
+                                onChange={e => setFormState({ ...formState, inserted_source_number: e.target.value ? Number(e.target.value) : undefined })}
+                                className={getSelectStyle('inserted_source_number')}
+                              >
+                                <option value="">Select source</option>
                                 <option value="1">1</option>
                                 <option value="2">2</option>
                                 <option value="3">3</option>
                               </select>
                             </div>
                             <div>
-                              <label className="block text-sm font-medium text-gray-200 mb-1">Filament Current (A)</label>
-                              <input type="number" step="1" value={formState.insertedFilamentCurrent} onChange={e => setFormState({ ...formState, insertedFilamentCurrent: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
+                              <label className={`block text-sm font-medium mb-1 ${validationErrors.inserted_filament_current ? 'text-red-400' : 'text-gray-200'}`}>
+                                Filament Current (A) *
+                              </label>
+                              <input type="number" step="1" value={formState.inserted_filament_current || ''} onChange={e => setFormState({ ...formState, inserted_filament_current: e.target.value ? Number(e.target.value) : undefined })} className={getInputStyle('inserted_filament_current')} />
                             </div>
                             <div>
-                              <label className="block text-sm font-medium text-gray-200 mb-1">Arc Current (mA)</label>
-                              <input type="number" step="1" value={formState.insertedArcCurrent} onChange={e => setFormState({ ...formState, insertedArcCurrent: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
+                              <label className={`block text-sm font-medium mb-1 ${validationErrors.inserted_arc_current ? 'text-red-400' : 'text-gray-200'}`}>
+                                Arc Current (mA) *
+                              </label>
+                              <input type="number" step="1" value={formState.inserted_arc_current || ''} onChange={e => setFormState({ ...formState, inserted_arc_current: e.target.value ? Number(e.target.value) : undefined })} className={getInputStyle('inserted_arc_current')} />
                             </div>
                             <div>
-                              <label className="block text-sm font-medium text-gray-200 mb-1">Filament Counter</label>
-                              <input type="number" step="1" value={formState.insertedFilamentCounter} onChange={e => setFormState({ ...formState, insertedFilamentCounter: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
+                              <label className={`block text-sm font-medium mb-1 ${validationErrors.inserted_filament_counter ? 'text-red-400' : 'text-gray-200'}`}>
+                                Filament Counter *
+                              </label>
+                              <input type="number" step="1" value={formState.inserted_filament_counter || ''} onChange={e => setFormState({ ...formState, inserted_filament_counter: e.target.value ? Number(e.target.value) : undefined })} className={getInputStyle('inserted_filament_counter')} />
                             </div>
                           </div>
                         </div>
@@ -547,34 +620,40 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
                           <h4 className="text-md font-semibold text-indigo-300 mb-2">Svmx / Pridex</h4>
                           <div className="grid grid-cols-2 gap-4">
                             <div>
-                              <label className="block text-sm font-medium text-gray-200 mb-1">Work Order Number</label>
-                              <input type="text" value={formState.workorderNumber} onChange={e => setFormState({ ...formState, workorderNumber: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
+                              <label className={`block text-sm font-medium mb-1 ${validationErrors.workorder_number ? 'text-red-400' : 'text-gray-200'}`}>
+                                Work Order Number *
+                              </label>
+                              <input type="text" value={formState.workorder_number || ''} onChange={e => setFormState({ ...formState, workorder_number: e.target.value })} className={getInputStyle('workorder_number')} />
                             </div>
                             <div>
-                              <label className="block text-sm font-medium text-gray-200 mb-1">Svmx Case Number</label>
-                              <input type="text" value={formState.caseNumber} onChange={e => setFormState({ ...formState, caseNumber: e.target.value })} className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500" />
+                              <label className={`block text-sm font-medium mb-1 ${validationErrors.case_number ? 'text-red-400' : 'text-gray-200'}`}>
+                                Svmx Case Number *
+                              </label>
+                              <input type="text" value={formState.case_number || ''} onChange={e => setFormState({ ...formState, case_number: e.target.value })} className={getInputStyle('case_number')} />
                             </div>
                           </div>
                         </div>
                         <div>
                           <h4 className="text-md font-semibold text-indigo-300 mb-2">Filament Hours</h4>
                           <p className="text-sm text-gray-300">
-                            {formState.insertedFilamentCounter && formState.removedFilamentCounter
-                              ? (parseFloat(formState.insertedFilamentCounter) - parseFloat(formState.removedFilamentCounter)).toFixed(2)
+                            {formState.inserted_filament_counter && formState.removed_filament_counter
+                              ? (formState.inserted_filament_counter - formState.removed_filament_counter).toFixed(2)
                               : '—'}
                           </p>
                         </div>
                         <div className="mb-2 grid grid-cols-2 gap-4">
                           <div>
-                            <label className="block text-sm font-medium text-gray-200 mb-1">Engineer 1</label>
+                            <label className={`block text-sm font-medium mb-1 ${validationErrors.engineers ? 'text-red-400' : 'text-gray-200'}`}>
+                              Engineer 1 *
+                            </label>
                             <select
-                              value={formState.engineers[0] || ''}
+                              value={formState.engineers?.[0] || ''}
                               onChange={e => {
-                                const newEngineers = [...formState.engineers];
+                                const newEngineers = [...(formState.engineers || [])];
                                 newEngineers[0] = e.target.value;
                                 setFormState({ ...formState, engineers: newEngineers.filter(Boolean) });
                               }}
-                              className="w-full rounded-lg bg-gray-800/50 border border-gray-700 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500"
+                              className={getSelectStyle('engineers')}
                             >
                               <option value="">Select engineer</option>
                               {engineerList.map(e => (
@@ -583,15 +662,20 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
                             </select>
                           </div>
                           <div>
-                            <label className="block text-sm font-medium text-gray-200 mb-1">Engineer 2</label>
+                            <label className={`block text-sm font-medium mb-1 ${validationErrors.engineers ? 'text-red-400' : 'text-gray-200'}`}>
+                              Engineer 2 *
+                            </label>
                             <select
-                              value={formState.engineers[1] || ''}
+                              value={formState.engineers?.[1] || ''}
                               onChange={e => {
-                                const newEngineers = [...formState.engineers];
+                                const newEngineers = [...(formState.engineers || [])];
+                                if (newEngineers.length === 0 && e.target.value) {
+                                  newEngineers[0] = '';  // Add empty first engineer if none exists
+                                }
                                 newEngineers[1] = e.target.value;
                                 setFormState({ ...formState, engineers: newEngineers.filter(Boolean) });
                               }}
-                              className="w-full rounded-lg bg-gray-800/50 border border-gray-700 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500"
+                              className={getSelectStyle('engineers')}
                             >
                               <option value="">Select engineer</option>
                               {engineerList.map(e => (
@@ -600,7 +684,7 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
                             </select>
                           </div>
                         </div>
-                      </div>
+                    </div>
                     )}
 
                     <div className="flex flex-col items-start mt-2 mb-2">

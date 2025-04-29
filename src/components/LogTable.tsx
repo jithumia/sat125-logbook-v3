@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Edit2, Trash2, Paperclip, ExternalLink, Download, X, Sun, Sunset, Moon, Clock, ChevronDown } from 'lucide-react';
-import { LogEntry, ShiftType, SearchFilters, ActiveShift } from '../types';
+import { LogEntry, ShiftType, SearchFilters, ActiveShift, Attachment } from '../types';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
 
@@ -117,10 +117,9 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
 
       // Apply filters based on showAllLogs
       if (!showAllLogs && activeShift) {
-        // If showing current shift only, filter by active shift
-        query = query
-          .eq('shift_type', activeShift.shift_type)
-          .gte('created_at', activeShift.started_at);
+        // If showing current shift only, filter by active shift start time
+        const shiftStartTime = new Date(activeShift.started_at);
+        query = query.gte('created_at', shiftStartTime.toISOString());
       }
 
       // Handle date filters
@@ -154,14 +153,6 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
         setLogs([]);
         return;
       }
-
-      // Debug log to verify the data
-      console.log('Fetched logs:', {
-        count: data.length,
-        filters: searchFilters,
-        firstLog: data[0],
-        lastLog: data[data.length - 1]
-      });
 
       // Process the results
       const groupedLogs: ShiftGroup[] = [];
@@ -219,7 +210,7 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     }
   };
 
-  // Client-side filtering for the search bar keyword and category
+  // Update the client-side filtering for the search bar keyword
   useEffect(() => {
     let filteredGroups = rawLogs;
 
@@ -238,22 +229,22 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
           }
 
           // For Main Coil Tuning (data-mc), search all relevant fields
-          if ((log.category as string) === 'data-mc') {
+          if (log.category === 'data-mc') {
             return [
               log.description,
               log.mc_setpoint,
               log.yoke_temperature,
               log.arc_current,
               log.filament_current,
-              log.pie_width,
-              log.p2e_width,
-              log.pie_x_width,
+              log.p1e_x_width,
+              log.p1e_y_width,
+              log.p2e_x_width,
               log.p2e_y_width
             ].some(val => val !== undefined && val !== null && val.toString().toLowerCase().includes(keyword));
           }
 
           // For Source Change (data-sc), search all relevant fields
-          if ((log.category as string) === 'data-sc') {
+          if (log.category === 'data-sc') {
             // Engineer names
             const engineerNames = log.engineers && Array.isArray(log.engineers) && engineerMap
               ? log.engineers.map(id => engineerMap[id] || id).join(', ').toLowerCase()
@@ -297,7 +288,7 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     }
 
     setLogs(filteredGroups);
-  }, [searchFilters.keyword, searchFilters.category, rawLogs, engineerMap]);
+  }, [rawLogs, searchFilters, engineerMap]);
 
   const fetchCriticalEvents = async () => {
     try {
@@ -518,63 +509,6 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
       console.error('Error viewing file:', error);
       toast.error('Failed to view file');
     }
-  };
-
-  const exportAllLogsToText = () => {
-    let textContent = 'Logbook Export\n';
-    textContent += 'Generated on: ' + new Date().toLocaleString() + '\n\n';
-
-    logs.forEach((shiftGroup, index) => {
-      textContent += `=== ${shiftGroup.shiftType.toUpperCase()} SHIFT ===\n`;
-      textContent += `Start: ${new Date(shiftGroup.startTime).toLocaleString()}\n`;
-      textContent += `End: ${shiftGroup.endTime ? new Date(shiftGroup.endTime).toLocaleString() : 'Ongoing'}\n\n`;
-
-      shiftGroup.logs.forEach((log) => {
-        textContent += `[${new Date(log.created_at).toLocaleString()}] ${log.category.toUpperCase()}\n`;
-        textContent += `Description: ${log.description}\n`;
-        
-        // Add additional details if they exist
-        if (log.case_number && (log.category as string) !== 'data-sc' && log.case_number) {
-          textContent += 'Details:\n';
-          textContent += `- Case: ${log.case_number} (${log.case_status || 'N/A'})\n`;
-        }
-        if (log.workorder_number && (log.category as string) !== 'data-sc' && log.workorder_number) {
-          textContent += `- Work Order: ${log.workorder_number} (${log.workorder_status || 'N/A'})\n`;
-        }
-        if (log.mc_setpoint && (log.category as string) === 'data-mc') {
-          textContent += '- Machine Parameters:\n';
-          textContent += `  * MC Setpoint: ${log.mc_setpoint}\n`;
-          textContent += `  * Yoke Temp: ${log.yoke_temperature}°C\n`;
-          textContent += `  * Arc Current: ${log.arc_current}A\n`;
-          textContent += `  * Filament: ${log.filament_current}A\n`;
-          textContent += `  * PIE Width: ${log.pie_width}\n`;
-          textContent += `  * P2E Width: ${log.p2e_width}\n`;
-        }
-
-        // Add attachments if they exist
-        if (log.attachments && log.attachments.length > 0) {
-          textContent += 'Attachments:\n';
-          log.attachments.forEach(attachment => {
-            textContent += `- ${attachment.file_name} (${formatFileSize(attachment.file_size)})\n`;
-          });
-        }
-
-        textContent += '\n';
-      });
-
-      textContent += '='.repeat(50) + '\n\n';
-    });
-
-    // Create and trigger download
-    const blob = new Blob([textContent], { type: 'text/plain;charset=utf-8;' });
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', `logbook_export_${new Date().toISOString().split('T')[0]}.txt`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
   };
 
   const toggleLogExpansion = (logId: string) => {
@@ -885,15 +819,13 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
                       log.category === 'error' ? 'bg-red-400/10 text-red-400 border border-red-400/20' :
                       log.category === 'downtime' ? 'bg-yellow-400/10 text-yellow-400 border border-yellow-400/20' :
                       log.category === 'workorder' ? 'bg-blue-400/10 text-blue-400 border border-blue-400/20' :
-                      (log.category as string) === 'data-mc' ? 'bg-purple-400/10 text-purple-400 border border-purple-400/20' :
-                      (log.category as string) === 'data-sc' ? 'bg-purple-400/10 text-purple-400 border border-purple-400/20' :
-                      (log.category as string) === 'data-collection' ? 'bg-purple-400/10 text-purple-400 border border-purple-400/20' :
+                      log.category === 'data-mc' ? 'bg-purple-400/10 text-purple-400 border border-purple-400/20' :
+                      log.category === 'data-sc' ? 'bg-green-400/10 text-green-400 border border-green-400/20' :
                       log.category === 'shift' ? 'bg-green-400/10 text-green-400 border border-green-400/20' :
                       'bg-gray-400/10 text-gray-400 border border-gray-400/20'
                 }`}>
-                      {log.category === 'data-collection' ? 'Data' :
-                       (log.category as string) === 'data-mc' ? 'Main Coil Tuning' :
-                       (log.category as string) === 'data-sc' ? 'Source Change' :
+                      {log.category === 'data-mc' ? 'Main Coil Tuning' :
+                       log.category === 'data-sc' ? 'Source Change' :
                        log.category.charAt(0).toUpperCase() + log.category.slice(1)}
                 </span>
                   </div>
@@ -910,7 +842,7 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
                       autoFocus
                     />
                         <div className="flex items-center gap-2">
-                          <button
+                    <button
                             type="submit"
                             className="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium rounded transition-colors"
                           >
@@ -1019,12 +951,12 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
                                       <span>Arc Current: <b>{log.arc_current ?? '—'}</b> mA</span>
                                     </div>
                                   </div>
-                                  <div>
+                  <div>
                                     <h5 className="text-xs font-bold text-indigo-300 mb-1">Beam Data</h5>
                                     <div className="flex flex-wrap gap-4 text-xs text-gray-200">
-                                      <span>PIE X width: <b>{log.pie_width ?? '—'}</b> mm</span>
-                                      <span>PIE Y width: <b>{log.p2e_width ?? '—'}</b> mm</span>
-                                      <span>P2E X width: <b>{log.pie_x_width ?? '—'}</b> mm</span>
+                                      <span>PIE X width: <b>{log.p1e_x_width ?? '—'}</b> mm</span>
+                                      <span>PIE Y width: <b>{log.p1e_y_width ?? '—'}</b> mm</span>
+                                      <span>P2E X width: <b>{log.p2e_x_width ?? '—'}</b> mm</span>
                                       <span>P2E Y width: <b>{log.p2e_y_width ?? '—'}</b> mm</span>
                                     </div>
                                   </div>
@@ -1093,20 +1025,20 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
                         
                         {/* Attachments in expanded view */}
                         {expandedLogId === log.id && log.attachments && log.attachments.length > 0 && (
-                          <div className="mt-2 space-y-1">
-                            {log.attachments.map((attachment) => (
+                      <div className="mt-2 space-y-1">
+                        {log.attachments.map((attachment) => (
                               <div key={attachment.id} className="flex items-center gap-2 text-sm bg-gray-700/30 p-2 rounded">
-                                <Paperclip className="h-4 w-4 text-gray-400" />
+                            <Paperclip className="h-4 w-4 text-gray-400" />
                                 <span className="text-gray-300 truncate">{attachment.file_name}</span>
                                 <span className="text-gray-500 shrink-0">({formatFileSize(attachment.file_size)})</span>
                                 <div className="flex items-center gap-1 ml-auto">
-                                  <button
+                              <button
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       handleView(attachment.file_path);
                                     }}
                                     className="p-1 text-gray-400 hover:text-white transition-colors hover:bg-white/10 rounded"
-                                    title="View"
+                                title="View"
                               >
                                 <ExternalLink className="h-4 w-4" />
                               </button>
@@ -1139,15 +1071,15 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
                 </button>
                 {/* Only show delete button if not a shift end entry */}
                 {!(log.category === 'shift' && log.description && log.description.toLowerCase().includes('shift ended')) && (
-                  <button 
+                <button 
                     onClick={(e) => {
                       e.stopPropagation();
                       handleDelete(log.id);
                     }}
                     className="p-1 text-gray-400 hover:text-red-400 transition-colors hover:bg-white/10 rounded"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
                 )}
                   </div>
                 </div>

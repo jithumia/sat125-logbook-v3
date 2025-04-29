@@ -1,5 +1,13 @@
 export type ShiftType = 'morning' | 'afternoon' | 'night' | 'data-mc' | 'data-sc';
-export type LogCategory = 'error' | 'general' | 'downtime' | 'workorder' | 'data-collection' | 'shift';
+export type LogCategory = 
+  | 'general'
+  | 'error'
+  | 'shift'
+  | 'data-mc'
+  | 'data-sc'
+  | 'workorder'
+  | 'downtime'
+  | 'data-collection';
 export type Status = 'ongoing' | 'closed' | 'technically-completed';
 
 export interface SearchFilters {
@@ -55,9 +63,9 @@ export interface LogEntry {
   yoke_temperature?: number;
   arc_current?: number;
   filament_current?: number;
-  pie_width?: number;
-  p2e_width?: number;
-  pie_x_width?: number;
+  p1e_x_width?: number;
+  p1e_y_width?: number;
+  p2e_x_width?: number;
   p2e_y_width?: number;
   // Source Change Data
   removed_source_number?: number;

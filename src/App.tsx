@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { BellRing, LogOut, Mail, Search, Calendar, X, RotateCcw, Send, Filter, ClipboardList, History, Settings, Clock, Archive, BookOpen, FileText, Shield, CheckCircle, XCircle } from 'lucide-react';
+import { BellRing, LogOut, Mail, Search, Calendar, X, RotateCcw, Send, Filter, ClipboardList, History, Settings, Clock, Archive, BookOpen, FileText, Shield, CheckCircle, XCircle, LayoutDashboard } from 'lucide-react';
 import { Auth } from '@supabase/auth-ui-react';
 import { ThemeSupa } from '@supabase/auth-ui-shared';
 import LogEntryForm from './components/LogEntryForm';
@@ -12,10 +12,11 @@ import LoadingSpinner from './components/LoadingSpinner';
 import ErrorMessage from './components/ErrorMessage';
 import AdvancedSearch from './components/AdvancedSearch';
 import QuickEntry from './components/QuickEntry';
-import { ActiveShift, ShiftType, SearchFilters, LogEntry, LogCategory } from './types';
+import { ActiveShift, ShiftType, SearchFilters, LogEntry, LogCategory, Attachment } from './types';
 import { supabase } from './lib/supabase';
 import toast from 'react-hot-toast';
 import { Session } from '@supabase/supabase-js';
+import Dashboard from './components/Dashboard';
 
 interface AccessRequest {
   id: string;
@@ -279,6 +280,7 @@ function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([]);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [showDashboard, setShowDashboard] = useState(false);
 
   // Add array of emojis for random selection
   const refreshEmojis = ["🔄", "✨", "🚀", "💫", "🎯", "🌟", "⚡️", "🔮"];
@@ -301,15 +303,57 @@ function App() {
     });
   };
 
+  const handleRefresh = async () => {
+    try {
+      setLoading(true);
+      
+      // Create a timeout promise
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Refresh timeout')), 10000); // 10 second timeout
+      });
+
+      // Race between the refresh operations and timeout
+      await Promise.race([
+        Promise.all([
+          fetchActiveShift(),
+          fetchRecentLogs()
+        ]),
+        timeoutPromise
+      ]);
+
+      // Reset UI states
+      resetSearchFilters();
+      setShowAllLogs(false);
+      setShowAdvancedSearch(false);
+      setShowDateFilter(false);
+      toast.success('Page refreshed successfully');
+    } catch (error) {
+      console.error('Error refreshing data:', error);
+      toast.error('Refresh failed - reloading page');
+      // Force page reload as fallback
+      window.location.reload();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Add loading timeout for initial auth
   useEffect(() => {
     let mounted = true;
+    let timeoutId: NodeJS.Timeout;
 
     async function initializeAuth() {
       try {
-        // Set loading immediately
         setLoading(true);
         
-        // Get the stored session first
+        // Set a timeout to force reload if initialization takes too long
+        timeoutId = setTimeout(() => {
+          if (mounted) {
+            console.error('Auth initialization timeout');
+            window.location.reload();
+          }
+        }, 15000); // 15 second timeout
+
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
         
         if (sessionError) throw sessionError;
@@ -323,12 +367,13 @@ function App() {
       } catch (error) {
         console.error('Auth initialization error:', error);
         if (mounted) {
-          toast.error('Failed to initialize authentication');
+          toast.error('Failed to initialize - reloading page');
+          window.location.reload();
         }
       } finally {
-        // Only set loading to false after everything is done
         if (mounted) {
           setLoading(false);
+          clearTimeout(timeoutId);
         }
       }
     }
@@ -347,6 +392,7 @@ function App() {
 
     return () => {
       mounted = false;
+      clearTimeout(timeoutId);
       subscription?.unsubscribe();
     };
   }, []);
@@ -617,29 +663,6 @@ function App() {
     }
   };
 
-  // Add this new function for clean refresh
-  const handleRefresh = async () => {
-    try {
-      setLoading(true);
-      // Refetch active shift
-      await fetchActiveShift();
-      // Refetch recent logs
-      await fetchRecentLogs();
-      // Reset search filters
-      resetSearchFilters();
-      // Reset view to current shift
-      setShowAllLogs(false);
-      setShowAdvancedSearch(false);
-      setShowDateFilter(false);
-      toast.success('Page refreshed successfully');
-    } catch (error) {
-      console.error('Error refreshing data:', error);
-      toast.error('Failed to refresh data');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   // Add this useEffect to inject the styles
   useEffect(() => {
     const styleElement = document.createElement('style');
@@ -652,24 +675,24 @@ function App() {
 
   // Memoize the Auth component at the top level
   const authComponent = useMemo(() => (
-    <Auth
-      supabaseClient={supabase}
-      appearance={{ 
-        theme: ThemeSupa,
-        variables: {
-          default: {
-            colors: {
+            <Auth
+              supabaseClient={supabase}
+              appearance={{ 
+                theme: ThemeSupa,
+                variables: {
+                  default: {
+                    colors: {
               brand: '#818CF8',
               brandAccent: '#6366F1',
               inputBackground: 'rgba(255, 255, 255, 0.1)',
-              inputText: 'white',
+                      inputText: 'white',
               inputPlaceholder: 'rgba(255, 255, 255, 0.5)',
               inputBorder: 'rgba(255, 255, 255, 0.2)',
               inputBorderHover: 'rgba(255, 255, 255, 0.3)',
               inputBorderFocus: '#818CF8',
-            },
-          },
-        },
+                    },
+                  },
+                },
         style: {
           button: {
             borderRadius: '0.5rem',
@@ -688,14 +711,14 @@ function App() {
             fontSize: '0.875rem',
           },
         },
-      }}
-      theme="dark"
-      providers={[]}
+              }}
+              theme="dark"
+              providers={[]}
       redirectTo={window.location.origin}
-      magicLink={false}
-      showLinks={false}
-      view="sign_in"
-    />
+              magicLink={false}
+              showLinks={false}
+              view="sign_in"
+            />
   ), []);
 
   // Add a helper to restore active shift if a 'shift ended' log is deleted
@@ -763,6 +786,351 @@ function App() {
     }
   };
 
+  // Add the export function
+  const exportLogsToCSV = async () => {
+    try {
+      // Check if we're filtering for specific categories
+      const category = searchFilters.category;
+      
+      // Build the query with filters
+      let query = supabase
+        .from('log_entries')
+        .select(`
+          *,
+          attachments (
+            id,
+            file_name,
+            file_type,
+            file_size,
+            file_path,
+            created_at
+          ),
+          engineers
+        `)
+        .order('created_at', { ascending: false });
+
+      // Apply date filters if present
+      if (searchFilters.startDate) {
+        const startDate = new Date(searchFilters.startDate);
+        startDate.setHours(0, 0, 0, 0);
+        query = query.gte('created_at', startDate.toISOString());
+      }
+      if (searchFilters.endDate) {
+        const endDate = new Date(searchFilters.endDate);
+        endDate.setHours(23, 59, 59, 999);
+        query = query.lte('created_at', endDate.toISOString());
+      }
+
+      // Apply shift type filter if present
+      if (searchFilters.shiftType) {
+        query = query.eq('shift_type', searchFilters.shiftType);
+      }
+
+      // Execute the query
+      const { data: logs, error } = await query;
+
+      if (error) throw error;
+      if (!logs || logs.length === 0) {
+        toast.error('No logs to export');
+        return;
+      }
+
+      // Fetch engineer names mapping
+      const { data: engineers } = await supabase
+        .from('engineers')
+        .select('id, name');
+      
+      const engineerMap: Record<string, string> = {};
+      if (engineers) {
+        engineers.forEach(eng => {
+          engineerMap[eng.id] = eng.name;
+        });
+      }
+
+      // Apply keyword filter and category filter to match UI exactly
+      let filteredLogs = logs;
+      
+      // Apply keyword filter if present
+      if (searchFilters.keyword && searchFilters.keyword.trim() !== '') {
+        const keyword = searchFilters.keyword.trim().toLowerCase();
+        filteredLogs = filteredLogs.filter(log => {
+          if (log.category === 'data-mc') {
+            return [
+              log.description,
+              log.mc_setpoint,
+              log.yoke_temperature,
+              log.arc_current,
+              log.filament_current,
+              log.p1e_x_width,
+              log.p1e_y_width,
+              log.p2e_x_width,
+              log.p2e_y_width
+            ].some(val => val !== undefined && val !== null && val.toString().toLowerCase().includes(keyword));
+          }
+          if (log.category === 'data-sc') {
+            const engineerNames = log.engineers && Array.isArray(log.engineers)
+              ? log.engineers.map((id: string) => engineerMap[id] || id).join(', ').toLowerCase()
+              : '';
+            return [
+              log.description,
+              log.removed_source_number,
+              log.removed_filament_current,
+              log.removed_arc_current,
+              log.removed_filament_counter,
+              log.inserted_source_number,
+              log.inserted_filament_current,
+              log.inserted_arc_current,
+              log.inserted_filament_counter,
+              log.workorder_number,
+              log.case_number,
+              engineerNames
+            ].some(val => val !== undefined && val !== null && val.toString().toLowerCase().includes(keyword));
+          }
+          return log.description.toLowerCase().includes(keyword);
+        });
+      }
+
+      // Apply category filter
+      if (category) {
+        filteredLogs = filteredLogs.filter(log => log.category === category);
+      }
+
+      if (category === 'data-mc') {
+        // Special format for Main Coil Tuning data
+        const headers = [
+          'Date',
+          'Time',
+          'Main Coil Setpoint (A)',
+          'Yoke Temperature (°C)',
+          'Arc Current (mA)',
+          'Filament Current (A)',
+          'P1E X Width (mm)',
+          'P1E Y Width (mm)',
+          'P2E X Width (mm)',
+          'P2E Y Width (mm)',
+          'Description',
+          'Engineers',
+          'Attachments'
+        ].join(',');
+
+        const rows = filteredLogs.map(log => {
+          const date = new Date(log.created_at);
+          const engineerNames = log.engineers?.map((id: string) => engineerMap[id] || id).join(';') || '';
+          const attachmentUrls = log.attachments?.map((a: Attachment) => 
+            `${window.location.origin}/storage/v1/object/public/attachments/${a.file_path}`
+          ).join(';') || '';
+
+          return [
+            date.toLocaleDateString(),
+            date.toLocaleTimeString(),
+            log.mc_setpoint || '',
+            log.yoke_temperature || '',
+            log.arc_current || '',
+            log.filament_current || '',
+            log.p1e_x_width || '',
+            log.p1e_y_width || '',
+            log.p2e_x_width || '',
+            log.p2e_y_width || '',
+            `"${(log.description || '').replace(/"/g, '""')}"`,
+            engineerNames,
+            attachmentUrls
+          ].join(',');
+        });
+
+        downloadCSV(headers, rows, 'main_coil_tuning');
+        return;
+      }
+
+      if (category === 'data-sc') {
+        // Special format for Source Change data
+        const headers = [
+          'Date',
+          'Time',
+          'Removed Source #',
+          'Inserted Source #',
+          'Removed Filament Current (A)',
+          'Removed Arc Current (mA)',
+          'Inserted Filament Current (A)',
+          'Inserted Arc Current (mA)',
+          'Removed Filament Counter',
+          'Inserted Filament Counter',
+          'Filament Hours',
+          'Engineers',
+          'Work Order',
+          'Case Number',
+          'Description',
+          'Attachments'
+        ].join(',');
+
+        const rows = filteredLogs.map(log => {
+          const date = new Date(log.created_at);
+          const engineerNames = log.engineers?.map((id: string) => engineerMap[id] || id).join(';') || '';
+          const attachmentUrls = log.attachments?.map((a: Attachment) => 
+            `${window.location.origin}/storage/v1/object/public/attachments/${a.file_path}`
+          ).join(';') || '';
+
+          const filamentHours = 
+            typeof log.inserted_filament_counter === 'number' && 
+            typeof log.removed_filament_counter === 'number'
+              ? (log.inserted_filament_counter - log.removed_filament_counter).toFixed(2)
+              : '';
+
+          return [
+            date.toLocaleDateString(),
+            date.toLocaleTimeString(),
+            log.removed_source_number || '',
+            log.inserted_source_number || '',
+            log.removed_filament_current || '',
+            log.removed_arc_current || '',
+            log.inserted_filament_current || '',
+            log.inserted_arc_current || '',
+            log.removed_filament_counter || '',
+            log.inserted_filament_counter || '',
+            filamentHours,
+            engineerNames,
+            log.workorder_number || '',
+            log.case_number || '',
+            `"${(log.description || '').replace(/"/g, '""')}"`,
+            attachmentUrls
+          ].join(',');
+        });
+
+        downloadCSV(headers, rows, 'source_change');
+        return;
+      }
+
+      // Default format for all logs
+      const headers = [
+        'Date',
+        'Time',
+        'Shift',
+        'Category',
+        'Description',
+        'Case Number',
+        'Case Status',
+        'Work Order',
+        'Work Order Status',
+        'Main Coil Setpoint (A)',
+        'Yoke Temperature (°C)',
+        'Arc Current (mA)',
+        'Filament Current (A)',
+        'P1E X Width (mm)',
+        'P1E Y Width (mm)',
+        'P2E X Width (mm)',
+        'P2E Y Width (mm)',
+        'Removed Source #',
+        'Removed Filament Current (A)',
+        'Removed Arc Current (mA)',
+        'Removed Filament Counter',
+        'Inserted Source #',
+        'Inserted Filament Current (A)',
+        'Inserted Arc Current (mA)',
+        'Inserted Filament Counter',
+        'Filament Hours',
+        'Engineers',
+        'Attachments'
+      ].join(',');
+
+      const rows = filteredLogs.map(log => {
+        const date = new Date(log.created_at);
+        const engineerNames = log.engineers?.map((id: string) => engineerMap[id] || id).join(';') || '';
+        const attachmentUrls = log.attachments?.map((a: Attachment) => 
+          `${window.location.origin}/storage/v1/object/public/attachments/${a.file_path}`
+        ).join(';') || '';
+
+        const filamentHours = log.category === 'data-sc' && 
+          typeof log.inserted_filament_counter === 'number' && 
+          typeof log.removed_filament_counter === 'number'
+            ? (log.inserted_filament_counter - log.removed_filament_counter).toFixed(2)
+            : '';
+
+        return [
+          date.toLocaleDateString(),
+          date.toLocaleTimeString(),
+          log.shift_type || '',
+          log.category || '',
+          `"${(log.description || '').replace(/"/g, '""')}"`,
+          log.case_number || '',
+          log.case_status || '',
+          log.workorder_number || '',
+          log.workorder_status || '',
+          log.mc_setpoint || '',
+          log.yoke_temperature || '',
+          log.arc_current || '',
+          log.filament_current || '',
+          log.p1e_x_width || '',
+          log.p1e_y_width || '',
+          log.p2e_x_width || '',
+          log.p2e_y_width || '',
+          log.removed_source_number || '',
+          log.removed_filament_current || '',
+          log.removed_arc_current || '',
+          log.removed_filament_counter || '',
+          log.inserted_source_number || '',
+          log.inserted_filament_current || '',
+          log.inserted_arc_current || '',
+          log.inserted_filament_counter || '',
+          filamentHours,
+          engineerNames,
+          attachmentUrls
+        ].join(',');
+      });
+
+      downloadCSV(headers, rows, 'all_logs');
+      toast.success('Logs exported successfully');
+    } catch (error) {
+      console.error('Error exporting logs:', error);
+      toast.error('Failed to export logs');
+    }
+  };
+
+  // Helper function to download CSV
+  const downloadCSV = (headers: string, rows: string[], filePrefix: string) => {
+    const csvContent = [headers, ...rows].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `${filePrefix}_export_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDashboardEntryClick = async (date: string, shiftType: string) => {
+    try {
+      setLoading(true);
+      
+      // Set a timeout for dashboard loading
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Dashboard loading timeout')), 10000);
+      });
+
+      await Promise.race([
+        Promise.all([
+          setShowDashboard(false),
+          setShowAllLogs(true),
+          setShowAdvancedSearch(true),
+          setSearchFilters({
+            startDate: date,
+            endDate: date,
+            shiftType: shiftType as ShiftType,
+            keyword: '',
+          })
+        ]),
+        timeoutPromise
+      ]);
+    } catch (error) {
+      console.error('Error loading dashboard entry:', error);
+      toast.error('Failed to load dashboard - reloading page');
+      window.location.reload();
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-indigo-900 flex items-center justify-center">
@@ -786,7 +1154,7 @@ function App() {
   }
 
   if (!session) {
-    return (
+  return (
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-indigo-900 flex items-center justify-center p-4">
         <div className="max-w-md w-full">
           <div className="flex flex-col items-center justify-center mb-8">
@@ -804,12 +1172,12 @@ function App() {
             <div className="mb-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-semibold text-white">Welcome Back</h2>
-                <button
+              <button
                   onClick={() => setShowSignupRequest(true)}
                   className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
-                >
+              >
                   Request Access
-                </button>
+              </button>
               </div>
               <p className="text-sm text-gray-400">Please sign in to continue to the logbook system.</p>
             </div>
@@ -877,23 +1245,23 @@ function App() {
                   />
                 </div>
                 <div className="flex justify-end gap-3 mt-6">
-                  <button
+              <button
                     type="button"
                     onClick={() => setShowSignupRequest(false)}
                     className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white transition-colors"
-                  >
+              >
                     Cancel
-                  </button>
-                  <button
+              </button>
+              <button
                     type="submit"
                     className="px-4 py-2 text-sm font-medium bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 transition-colors"
-                  >
+              >
                     Submit Request
-                  </button>
-                </div>
-              </form>
+              </button>
             </div>
+              </form>
           </div>
+        </div>
         )}
       </div>
     );
@@ -901,265 +1269,258 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-indigo-900">
-      {/* Main Content Layout */}
       <div className={`${isSidebarOpen ? 'ml-64' : 'ml-16'} transition-all duration-300 ease-in-out min-h-screen flex flex-col`}>
-        {/* Top Section: Active Shift and Critical Events in a row */}
-        {!showAllLogs && (
-          <div className="flex gap-4 p-2">
-            {/* Active Shift */}
-            <div className="flex-1">
-              <div className="bg-white/10 backdrop-blur-lg rounded-lg border border-white/20 p-3">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-lg font-semibold text-white">Active Shift</h3>
+        {showDashboard ? (
+          <Dashboard onEntryClick={handleDashboardEntryClick} />
+        ) : (
+          <>
+            {!showAllLogs && (
+              <div className="flex gap-4 p-2">
+                <div className="flex-1">
+                  <div className="bg-white/10 backdrop-blur-lg rounded-lg border border-white/20 p-3">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-lg font-semibold text-white">Active Shift</h3>
         {activeShift && (
-                        <span className="text-sm text-indigo-400">
-                          ({activeShift.shift_type.charAt(0).toUpperCase() + activeShift.shift_type.slice(1)} Shift)
-                        </span>
-                      )}
-                      {activeShift && (
+                            <span className="text-sm text-indigo-400">
+                              ({activeShift.shift_type.charAt(0).toUpperCase() + activeShift.shift_type.slice(1)} Shift)
+                            </span>
+                          )}
+                          {activeShift && (
               <button
-                          onClick={handleEndShift}
-                          className="px-2 py-0.5 bg-red-600 text-white text-sm rounded hover:bg-red-700 transition-colors"
-              >
-                          End Shift
+                              onClick={handleEndShift}
+                              className="px-2 py-0.5 bg-red-600 text-white text-sm rounded hover:bg-red-700 transition-colors"
+                            >
+                              End Shift
               </button>
               )}
             </div>
-                    {activeShift ? (
-                      <div className="text-xs text-gray-300 mt-1">
-                        <span className="mr-3">Started: {new Date(activeShift.started_at).toLocaleString()}</span>
-                        <span>Engineers: {activeShift.engineers?.map(e => e.engineer.name).join(', ')}</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-sm text-gray-300">Start a new shift to begin logging entries</span>
+                        {activeShift ? (
+                          <div className="text-xs text-gray-300 mt-1">
+                            <span className="mr-3">Started: {new Date(activeShift.started_at).toLocaleString()}</span>
+                            <span>Engineers: {activeShift.engineers?.map(e => e.engineer.name).join(', ')}</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="text-sm text-gray-300">Start a new shift to begin logging entries</span>
               <button
                 onClick={handleStartShift}
-                          className="px-2 py-0.5 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700 transition-colors"
+                              className="px-2 py-0.5 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700 transition-colors"
               >
                 Start Shift
               </button>
-            </div>
-                    )}
-          </div>
-        </div>
-        {activeShift && (
-                  <div className="mt-2">
-                    <QuickEntry 
-                      activeShift={activeShift} 
-                      onEntryAdded={fetchRecentLogs} 
-                      onFullFormClick={() => setShowForm(true)}
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Critical Events */}
-            <div className="w-80">
-              <div className="bg-white/10 backdrop-blur-lg rounded-lg border border-white/20 p-3">
-                <h3 className="text-lg font-semibold text-white mb-2">Critical Events</h3>
-                <div className="h-[120px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
-                 {recentLogs.length > 0 ? (
-                    recentLogs.map(log => (
-                      <div 
-                        key={log.id}
-                        onClick={() => handleCriticalEventClick(log)}
-                        className={`p-1.5 rounded mb-1.5 ${
-                          log.category === 'error' 
-                            ? 'bg-red-900/20 border border-red-700/50' 
-                            : 'bg-yellow-900/20 border border-yellow-700/50'
-                        } cursor-pointer hover:bg-white/5 transition-colors`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <span className={`px-1.5 py-0.5 text-xs font-medium rounded ${
-                              log.category === 'error' 
-                                ? 'bg-red-900 text-red-200' 
-                                : 'bg-yellow-900 text-yellow-200'
-                            }`}>
-                              {log.category.toUpperCase()}
-                            </span>
-                            {log.category === 'downtime' && log.case_number && (
-                              <span className="text-xs text-yellow-400">
-                                #{log.case_number} ({log.case_status})
-                              </span>
-                            )}
                           </div>
-                          <span className="text-xs text-gray-400">
-                            {new Date(log.created_at).toLocaleTimeString()}
-                          </span>
-                        </div>
-                        <p className="text-xs text-white mt-1">{log.description}</p>
+                        )}
                       </div>
-                    ))
-                 ) : (
-                   <div className="text-center py-1 text-gray-400 text-xs">
-                     No critical events recorded
-                   </div>
-                 )}
+                    </div>
+                    {activeShift && (
+                      <div className="mt-2">
+                        <QuickEntry 
+                          activeShift={activeShift} 
+                          onEntryAdded={fetchRecentLogs} 
+                          onFullFormClick={() => setShowForm(true)}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="w-80">
+                  <div className="bg-white/10 backdrop-blur-lg rounded-lg border border-white/20 p-3">
+                    <h3 className="text-lg font-semibold text-white mb-2">Critical Events</h3>
+                    <div className="h-[120px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
+                      {recentLogs.length > 0 ? (
+                        recentLogs.map(log => (
+                          <div 
+                            key={log.id}
+                            onClick={() => handleCriticalEventClick(log)}
+                            className={`p-1.5 rounded mb-1.5 ${
+                              log.category === 'error' 
+                                ? 'bg-red-900/20 border border-red-700/50' 
+                                : 'bg-yellow-900/20 border border-yellow-700/50'
+                            } cursor-pointer hover:bg-white/5 transition-colors`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className={`px-1.5 py-0.5 text-xs font-medium rounded ${
+                                  log.category === 'error' 
+                                    ? 'bg-red-900 text-red-200' 
+                                    : 'bg-yellow-900 text-yellow-200'
+                                }`}>
+                                  {log.category.toUpperCase()}
+                                </span>
+                                {log.category === 'downtime' && log.case_number && (
+                                  <span className="text-xs text-yellow-400">
+                                    #{log.case_number} ({log.case_status})
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-xs text-gray-400">
+                                {new Date(log.created_at).toLocaleTimeString()}
+                              </span>
+                            </div>
+                            <p className="text-xs text-white mt-1">{log.description}</p>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-center py-1 text-gray-400 text-xs">
+                          No critical events recorded
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
-          </div>
-        )}
+            )}
 
-        {/* Main Log Table Section - Takes maximum available space */}
-        <div className={`flex-1 ${showAllLogs ? 'p-0' : 'p-2'} bg-gradient-to-br from-gray-900 via-blue-900 to-indigo-900`} style={{ minHeight: showAllLogs ? '100vh' : 'calc(100vh - 140px)' }}>
-          <div className={`bg-white/10 backdrop-blur-lg ${showAllLogs ? '' : 'rounded-lg'} border border-white/20 h-full flex flex-col overflow-hidden will-change-scroll`}>
-            <div className="flex justify-between items-center px-4 py-3 border-b border-white/10 bg-gray-900/50 backdrop-blur-lg sticky top-0 z-10">
-              <div className="flex items-center gap-4">
-                <h3 className="text-lg font-semibold text-white">
-                  {showAllLogs ? 'All Logs' : 'Current Shift Logs'}
-                </h3>
-                {showAllLogs && (
+            <div className={`flex-1 ${showAllLogs ? 'p-0' : 'p-2'} bg-gradient-to-br from-gray-900 via-blue-900 to-indigo-900`} style={{ minHeight: showAllLogs ? '100vh' : 'calc(100vh - 140px)' }}>
+              <div className={`bg-white/10 backdrop-blur-lg ${showAllLogs ? '' : 'rounded-lg'} border border-white/20 h-full flex flex-col overflow-hidden will-change-scroll`}>
+                <div className="flex justify-between items-center px-4 py-3 border-b border-white/10 bg-gray-900/50 backdrop-blur-lg sticky top-0 z-10">
+                  <div className="flex items-center gap-4">
+                    <h3 className="text-lg font-semibold text-white">
+                      {showAllLogs ? 'All Logs' : 'Current Shift Logs'}
+                    </h3>
+                    {showAllLogs && (
               <button
-                    onClick={() => setShowAdvancedSearch(!showAdvancedSearch)}
-                    className={`px-2 py-1 text-xs rounded flex items-center gap-1 transition-colors ${
-                      showAdvancedSearch 
-                        ? 'bg-indigo-600 text-white hover:bg-indigo-700' 
-                        : 'bg-gray-800 text-gray-300 hover:text-white border border-gray-700'
-                    }`}
-                  >
-                    <Filter className="h-3 w-3" />
-                    Filter
-              </button>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                {!showAllLogs && (
-              <button
-                    onClick={() => {
-                      setShowAllLogs(true);
-                      resetSearchFilters();
-                    }}
-                    className="px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-white/10 rounded transition-colors flex items-center gap-1"
-                  >
-                    <History className="h-3 w-3" />
-                    <span>View All Logs</span>
-              </button>
-                )}
-              <button 
-                  onClick={() => {/* TODO: Export functionality */}}
-                  className="px-2 py-1 text-xs bg-gray-700 text-white rounded hover:bg-gray-600 transition-colors"
-              >
-                  Export All Logs
-              </button>
-            </div>
-          </div>
-
-            {/* Advanced Search Section */}
-            {showAllLogs && (
-              <div className="border-b border-white/10 bg-gray-900/50 backdrop-blur-lg sticky top-[57px] z-10">
-                <div className="p-2 flex flex-wrap items-center gap-2">
-                  <div className="flex-1 min-w-[200px]">
-                <input
-                  type="text"
-                      placeholder="Search in descriptions..."
-                  value={searchFilters.keyword}
-                      onChange={(e) => setSearchFilters({ ...searchFilters, keyword: e.target.value })}
-                      className="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white placeholder-gray-400 focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-
-                  {showAdvancedSearch && (
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={searchFilters.shiftType || ''}
-                        onChange={(e) => setSearchFilters({ ...searchFilters, shiftType: e.target.value as ShiftType | undefined })}
-                        className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white focus:outline-none focus:border-indigo-500"
-                      >
-                        <option value="">All Shifts</option>
-                        <option value="morning">Morning</option>
-                        <option value="afternoon">Afternoon</option>
-                        <option value="night">Night</option>
-                      </select>
-
-                      <select
-                        value={searchFilters.category || ''}
-                        onChange={(e) => setSearchFilters({ ...searchFilters, category: e.target.value as LogCategory | undefined })}
-                        className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white focus:outline-none focus:border-indigo-500"
-                      >
-                        <option value="">All Categories</option>
-                        <option value="general">📝 General</option>
-                        <option value="error">⚠️ Error</option>
-                        <option value="downtime">🔄 Downtime</option>
-                        <option value="workorder">📋 Work Order</option>
-                        <option value="data-collection">📊 Data Collection</option>
-                        <option value="shift">👤 Shift Changes</option>
-                      </select>
-
-              <button
-                        onClick={() => setShowDateFilter(!showDateFilter)}
-                        className={`px-3 py-1.5 text-xs rounded flex items-center gap-1 transition-colors ${
-                          showDateFilter 
+                        onClick={() => setShowAdvancedSearch(!showAdvancedSearch)}
+                        className={`px-2 py-1 text-xs rounded flex items-center gap-1 transition-colors ${
+                          showAdvancedSearch 
                             ? 'bg-indigo-600 text-white hover:bg-indigo-700' 
                             : 'bg-gray-800 text-gray-300 hover:text-white border border-gray-700'
                         }`}
                       >
-                        <Calendar className="h-3 w-3" />
-                        Date Filter
+                        <Filter className="h-3 w-3" />
+                        Filter
+              </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {!showAllLogs && (
+              <button
+                        onClick={() => {
+                          setShowAllLogs(true);
+                          resetSearchFilters();
+                        }}
+                        className="px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-white/10 rounded transition-colors flex items-center gap-1"
+                      >
+                        <History className="h-3 w-3" />
+                        <span>View All Logs</span>
+              </button>
+                    )}
+              <button 
+                      onClick={exportLogsToCSV}
+                      className="px-2 py-1 text-xs bg-gray-700 text-white rounded hover:bg-gray-600 transition-colors"
+              >
+                      Export
+              </button>
+            </div>
+          </div>
+
+                {showAllLogs && (
+                  <div className="border-b border-white/10 bg-gray-900/50 backdrop-blur-lg sticky top-[57px] z-10">
+                    <div className="p-2 flex flex-wrap items-center gap-2">
+                      <div className="flex-1 min-w-[200px]">
+                <input
+                  type="text"
+                          placeholder="Search in descriptions..."
+                  value={searchFilters.keyword}
+                          onChange={(e) => setSearchFilters({ ...searchFilters, keyword: e.target.value })}
+                          className="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white placeholder-gray-400 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+                      {showAdvancedSearch && (
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={searchFilters.shiftType || ''}
+                            onChange={(e) => setSearchFilters({ ...searchFilters, shiftType: e.target.value as ShiftType | undefined })}
+                            className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white focus:outline-none focus:border-indigo-500"
+                          >
+                            <option value="">All Shifts</option>
+                            <option value="morning">Morning</option>
+                            <option value="afternoon">Afternoon</option>
+                            <option value="night">Night</option>
+                          </select>
+
+                          <select
+                            value={searchFilters.category || ''}
+                            onChange={(e) => setSearchFilters({ ...searchFilters, category: e.target.value as LogCategory | undefined })}
+                            className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white focus:outline-none focus:border-indigo-500"
+                          >
+                            <option value="">All Categories</option>
+                            <option value="general">📝 General</option>
+                            <option value="error">⚠️ Error</option>
+                            <option value="downtime">🔄 Downtime</option>
+                            <option value="workorder">📋 Work Order</option>
+                            <option value="data-mc">🔧 Main Coil Tuning</option>
+                            <option value="data-sc">🔄 Source Change</option>
+                          </select>
+
+              <button
+                            onClick={() => setShowDateFilter(!showDateFilter)}
+                            className={`px-3 py-1.5 text-xs rounded flex items-center gap-1 transition-colors ${
+                              showDateFilter 
+                                ? 'bg-indigo-600 text-white hover:bg-indigo-700' 
+                                : 'bg-gray-800 text-gray-300 hover:text-white border border-gray-700'
+                            }`}
+                          >
+                            <Calendar className="h-3 w-3" />
+                            Date Filter
               </button>
 
                   <button
-                        onClick={() => {
-                          resetSearchFilters();
-                          setShowDateFilter(false);
-                        }}
-                        className="px-3 py-1.5 text-xs bg-gray-800 text-gray-300 hover:text-white border border-gray-700 rounded transition-colors flex items-center gap-1"
-                      >
-                        <RotateCcw className="h-3 w-3" />
-                        Reset
+                            onClick={() => {
+                              resetSearchFilters();
+                              setShowDateFilter(false);
+                            }}
+                            className="px-3 py-1.5 text-xs bg-gray-800 text-gray-300 hover:text-white border border-gray-700 rounded transition-colors flex items-center gap-1"
+                          >
+                            <RotateCcw className="h-3 w-3" />
+                            Reset
                   </button>
                 </div>
-                  )}
-                </div>
+                      )}
+                    </div>
 
-                {/* Date Filter Section */}
-                {showAdvancedSearch && showDateFilter && (
-                  <div className="p-2 pt-0 flex gap-2 items-center">
-                    <div className="flex items-center gap-2">
+                    {showAdvancedSearch && showDateFilter && (
+                      <div className="p-2 pt-0 flex gap-2 items-center">
+                        <div className="flex items-center gap-2">
                     <input
-                        type="date"
+                            type="date"
                       value={searchFilters.startDate}
-                        onChange={(e) => setSearchFilters({ ...searchFilters, startDate: e.target.value })}
-                        className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white focus:outline-none focus:border-indigo-500"
-                      />
-                      <span className="text-gray-400">to</span>
+                            onChange={(e) => setSearchFilters({ ...searchFilters, startDate: e.target.value })}
+                            className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white focus:outline-none focus:border-indigo-500"
+                          />
+                          <span className="text-gray-400">to</span>
                     <input
-                        type="date"
+                            type="date"
                       value={searchFilters.endDate}
-                        onChange={(e) => setSearchFilters({ ...searchFilters, endDate: e.target.value })}
-                        className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white focus:outline-none focus:border-indigo-500"
+                            onChange={(e) => setSearchFilters({ ...searchFilters, endDate: e.target.value })}
+                            className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white focus:outline-none focus:border-indigo-500"
                     />
                 </div>
               </div>
             )}
           </div>
-            )}
+                )}
 
-            <div className="flex-1 overflow-auto overscroll-none">
-              <div className="h-full bg-gradient-to-br from-gray-900 via-blue-900 to-indigo-900">
+                <div className="flex-1 overflow-auto overscroll-none">
+                  <div className="h-full bg-gradient-to-br from-gray-900 via-blue-900 to-indigo-900">
         <LogTable 
-                  showAllLogs={showAllLogs}
+                      showAllLogs={showAllLogs}
           searchFilters={searchFilters}
-                  activeShift={activeShift}
-                />
+                      activeShift={activeShift}
+                    />
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
+          </>
+        )}
       </div>
 
-      {/* Navigation Sidebar */}
-      <div 
-        className={`fixed left-0 top-0 bottom-0 ${
-          isSidebarOpen ? 'w-64' : 'w-16'
-        } bg-white/10 backdrop-blur-lg border-r border-white/10 sidebar-transition z-50 flex flex-col overflow-hidden`}
-      >
-        {/* Top section with logo and navigation */}
+      <div className={`fixed left-0 top-0 bottom-0 ${isSidebarOpen ? 'w-64' : 'w-16'} bg-white/10 backdrop-blur-lg border-r border-white/10 sidebar-transition z-50 flex flex-col overflow-hidden`}>
         <div className="flex-1">
           <div className="p-4">
             <div className={`flex items-center ${isSidebarOpen ? 'justify-start' : 'justify-center'} mb-8`}>
@@ -1175,7 +1536,6 @@ function App() {
                     className="h-5 w-5"
                   />
                 </div>
-                {/* Expanded view */}
                 {isSidebarOpen ? (
                   <div 
                     onClick={handleRefresh}
@@ -1186,32 +1546,19 @@ function App() {
                         Logbook
                       </h1>
                       <p className="text-xs text-gray-400 whitespace-nowrap">SAT.125 Chennai</p>
-                      
-                      {/* Expanded tooltip */}
-                      <div className="expanded-tooltip">
-                        <span className="emoji-animate">{currentEmoji}</span>
-                        <span className="text-white text-sm">Click to refresh</span>
-                      </div>
                     </div>
                   </div>
                 ) : (
-                  /* Minimized view */
-                  <div className="minimized-text">
-                    <div 
-                      onClick={handleRefresh}
-                      className="minimized-text-container cursor-pointer group"
-                    >
-                      <div className="vertical-text flex items-center justify-center">
+                  <div 
+                    onClick={handleRefresh}
+                    className="fixed bottom-20 left-0 w-16 cursor-pointer"
+                  >
+                    <div className="px-2 py-4 text-center">
+                      <div className="vertical-text">
                         <span className="text-sm font-medium">
                           <span className="text-white">Logbook</span>
-                          <span className="text-gray-400"> - </span>
-                          <span className="text-gray-400">SAT.125 Chennai</span>
+                          <span className="text-gray-400">SAT.125</span>
                         </span>
-                      </div>
-                      {/* Side tooltip */}
-                      <div className="emoji-tooltip">
-                        <span className="emoji-animate text-lg">{currentEmoji}</span>
-                        <span className="text-white text-xs">Click to refresh</span>
                       </div>
             </div>
           </div>
@@ -1219,21 +1566,45 @@ function App() {
               </div>
             </div>
 
-            <nav className="space-y-1">
+            <nav className="space-y-1 mt-4">
               <button 
                 onClick={() => {
+                  setShowDashboard(true);
+                  setShowAllLogs(false);
+                }}
+                className={`sidebar-item ${isSidebarOpen ? 'expanded' : 'collapsed'} group ${
+                  showDashboard 
+                    ? 'text-white' 
+                    : 'text-gray-400 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <div className="sidebar-icon">
+                  <LayoutDashboard className="h-5 w-5" />
+                </div>
+                {isSidebarOpen ? (
+                  <span className="sidebar-text">Dashboard</span>
+                ) : (
+                  <span className="sidebar-tooltip text-sm text-white">
+                    Dashboard
+                  </span>
+                )}
+              </button>
+
+              <button 
+                onClick={() => {
+                  setShowDashboard(false);
                   setShowAllLogs(false);
                   resetSearchFilters();
                 }}
                 className={`sidebar-item ${isSidebarOpen ? 'expanded' : 'collapsed'} group ${
-                  !showAllLogs 
+                  !showAllLogs && !showDashboard
                     ? 'text-white' 
                     : 'text-gray-400 hover:text-white hover:bg-white/5'
                 }`}
               >
                 <div className="sidebar-icon">
                   <Clock className="h-5 w-5" />
-                  {!showAllLogs && (
+                  {!showAllLogs && !showDashboard && (
                     <div className="absolute -top-1 -right-1 w-2 h-2 bg-green-400 rounded-full animate-pulse" />
                   )}
                 </div>
@@ -1248,11 +1619,12 @@ function App() {
               
               <button 
                 onClick={() => {
+                  setShowDashboard(false);
                   setShowAllLogs(true);
                   resetSearchFilters();
                 }}
                 className={`sidebar-item ${isSidebarOpen ? 'expanded' : 'collapsed'} group ${
-                  showAllLogs 
+                  showAllLogs && !showDashboard
                     ? 'text-white' 
                     : 'text-gray-400 hover:text-white hover:bg-white/5'
                 }`}
@@ -1272,7 +1644,6 @@ function App() {
           </div>
         </div>
 
-        {/* Bottom section with logout button */}
         <div className="mt-auto">
           {isAdmin && (
             <button 
@@ -1313,99 +1684,98 @@ function App() {
         </div>
       </div>
 
-        {/* Modals */}
-        {showForm && (
-      <LogEntryForm
-        onClose={() => setShowForm(false)}
-        activeShift={activeShift}
-      />
-        )}
+      {showForm && (
+        <LogEntryForm
+          onClose={() => setShowForm(false)}
+          activeShift={activeShift}
+        />
+      )}
         {showStartShift && (
           <StartShiftModal 
             onClose={() => setShowStartShift(false)} 
-        onSuccess={fetchActiveShift}
+          onSuccess={fetchActiveShift}
           />
         )}
-    {showEndShift && (
+      {showEndShift && (
           <EndShiftModal 
             onClose={() => setShowEndShift(false)} 
-        onSuccess={fetchActiveShift}
-        activeShift={activeShift}
+          onSuccess={fetchActiveShift}
+          activeShift={activeShift}
           />
         )}
         {showReportModal && (
-    <ShiftReportModal
-      onClose={() => setShowReportModal(false)}
-      activeShift={activeShift}
-    />
-        )}
-        {showAdminPanel && (
-          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
-            <div className="bg-gray-900 rounded-2xl p-6 max-w-4xl w-full mx-4 border border-white/10">
-              <div className="flex items-center justify-between mb-6">
-                <h3 className="text-xl font-semibold text-white">Access Request Management</h3>
-                <button
-                  onClick={() => setShowAdminPanel(false)}
-                  className="text-gray-400 hover:text-white transition-colors"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
+        <ShiftReportModal
+          onClose={() => setShowReportModal(false)}
+          activeShift={activeShift}
+        />
+      )}
+      {showAdminPanel && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-gray-900 rounded-2xl p-6 max-w-4xl w-full mx-4 border border-white/10">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl font-semibold text-white">Access Request Management</h3>
+              <button
+                onClick={() => setShowAdminPanel(false)}
+                className="text-gray-400 hover:text-white transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
 
-              <div className="space-y-4">
-                {accessRequests.length === 0 ? (
-                  <p className="text-center text-gray-400 py-8">No pending access requests</p>
-                ) : (
-                  accessRequests.map((request) => (
-                    <div 
-                      key={request.id} 
-                      className="bg-white/5 rounded-xl p-4 border border-white/10"
-                    >
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <h4 className="text-white font-medium">{request.name}</h4>
-                          <p className="text-sm text-gray-400">{request.email}</p>
-                          <p className="text-sm text-gray-300 mt-1">Role: {request.role}</p>
-                          <p className="text-sm text-gray-400 mt-2">{request.message}</p>
-                          <div className="mt-2 flex items-center gap-2">
-                            <span className={`text-xs px-2 py-1 rounded ${
-                              request.status === 'pending' ? 'bg-yellow-500/20 text-yellow-300' :
-                              request.status === 'approved' ? 'bg-green-500/20 text-green-300' :
-                              'bg-red-500/20 text-red-300'
-                            }`}>
-                              {request.status.charAt(0).toUpperCase() + request.status.slice(1)}
-                            </span>
-                            <span className="text-xs text-gray-500">
-                              {new Date(request.created_at).toLocaleDateString()}
-                            </span>
-                          </div>
+            <div className="space-y-4">
+              {accessRequests.length === 0 ? (
+                <p className="text-center text-gray-400 py-8">No pending access requests</p>
+              ) : (
+                accessRequests.map((request) => (
+                  <div 
+                    key={request.id} 
+                    className="bg-white/5 rounded-xl p-4 border border-white/10"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <h4 className="text-white font-medium">{request.name}</h4>
+                        <p className="text-sm text-gray-400">{request.email}</p>
+                        <p className="text-sm text-gray-300 mt-1">Role: {request.role}</p>
+                        <p className="text-sm text-gray-400 mt-2">{request.message}</p>
+                        <div className="mt-2 flex items-center gap-2">
+                          <span className={`text-xs px-2 py-1 rounded ${
+                            request.status === 'pending' ? 'bg-yellow-500/20 text-yellow-300' :
+                            request.status === 'approved' ? 'bg-green-500/20 text-green-300' :
+                            'bg-red-500/20 text-red-300'
+                          }`}>
+                            {request.status.charAt(0).toUpperCase() + request.status.slice(1)}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            {new Date(request.created_at).toLocaleDateString()}
+                          </span>
                         </div>
-                        {request.status === 'pending' && (
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => handleRequestStatus(request.id, 'approved')}
-                              className="p-2 rounded-lg bg-green-500/10 text-green-400 hover:bg-green-500/20 transition-colors"
-                              title="Approve Request"
-                            >
-                              <CheckCircle className="h-5 w-5" />
-                            </button>
-                            <button
-                              onClick={() => handleRequestStatus(request.id, 'rejected')}
-                              className="p-2 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
-                              title="Reject Request"
-                            >
-                              <XCircle className="h-5 w-5" />
-                            </button>
-                          </div>
-                        )}
                       </div>
+                      {request.status === 'pending' && (
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleRequestStatus(request.id, 'approved')}
+                            className="p-2 rounded-lg bg-green-500/10 text-green-400 hover:bg-green-500/20 transition-colors"
+                            title="Approve Request"
+                          >
+                            <CheckCircle className="h-5 w-5" />
+                          </button>
+                          <button
+                            onClick={() => handleRequestStatus(request.id, 'rejected')}
+                            className="p-2 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+                            title="Reject Request"
+                          >
+                            <XCircle className="h-5 w-5" />
+                          </button>
+                        </div>
+                      )}
                     </div>
-                  ))
-                )}
-              </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
-        )}
+        </div>
+      )}
     </div>
   );
 }
