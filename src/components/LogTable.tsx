@@ -1,13 +1,18 @@
-import React, { useEffect, useState } from 'react';
-import { Edit2, Trash2, Paperclip, ExternalLink, Download, X, Sun, Sunset, Moon, Clock, ChevronDown } from 'lucide-react';
-import { LogEntry, ShiftType, SearchFilters, ActiveShift, Attachment } from '../types';
+import React, { useEffect, useState, Fragment, useRef } from 'react';
+import { Edit2, Trash2, Paperclip, ExternalLink, Download, X, Sun, Sunset, Moon, Clock, ChevronDown, Timer, Calendar } from 'lucide-react';
+import { LogEntry, ShiftType, SearchFilters, ActiveShift, Attachment, Status } from '../types';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
+import { format, parse, set } from 'date-fns';
+import { Dialog, Popover } from '@headlessui/react';
+import TimePicker from './TimePicker';
+import DateTimePicker from './DateTimePicker';
 
 interface LogTableProps {
   showAllLogs: boolean;
   searchFilters: SearchFilters;
   activeShift: ActiveShift | null;
+  setIsEditing: (isEditing: boolean) => void;
 }
 
 interface ShiftInfo {
@@ -37,7 +42,7 @@ type StatusType = 'open' | 'in_progress' | 'pending' | 'closed';
 
 // Add new interfaces for status types
 interface StatusOption {
-  value: string;
+  value: Status;
   label: string;
   color: string;
 }
@@ -49,7 +54,7 @@ const STATUS_OPTIONS: StatusOption[] = [
   { value: 'closed', label: 'Closed', color: 'bg-gray-500' }
 ];
 
-const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeShift }) => {
+const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeShift, setIsEditing }) => {
   const [rawLogs, setRawLogs] = useState<ShiftGroup[]>([]);
   const [logs, setLogs] = useState<ShiftGroup[]>([]);
   const [loading, setLoading] = useState(true);
@@ -59,6 +64,21 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
   const [activeStatusId, setActiveStatusId] = useState<string | null>(null);
   const [engineerMap, setEngineerMap] = useState<Record<string, string>>({});
+  const [editingDowntime, setEditingDowntime] = useState<{
+    logId: string;
+    startTime: string;
+    endTime: string | null;
+    initialStartTime: string;
+    initialEndTime: string | null;
+  } | null>(null);
+  const [showDowntimeModal, setShowDowntimeModal] = useState(false);
+
+  // Add a ref to track if we're currently editing
+  const isEditing = useRef(false);
+
+  useEffect(() => {
+    isEditing.current = showDowntimeModal || editingLog !== null;
+  }, [showDowntimeModal, editingLog]);
 
   useEffect(() => {
     fetchLogs();
@@ -83,11 +103,13 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
           table: 'log_entries'
         },
         async () => {
-          // Fetch both logs and critical events on any change
-          await Promise.all([
-            fetchLogs(),
-            fetchCriticalEvents()
-          ]);
+          // Only refresh if we're not currently editing
+          if (!isEditing.current) {
+            await Promise.all([
+              fetchLogs(),
+              fetchCriticalEvents()
+            ]);
+          }
         }
       )
       .subscribe();
@@ -96,6 +118,11 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
       subscription.unsubscribe();
     };
   }, [showAllLogs, searchFilters, activeShift]);
+
+  useEffect(() => {
+    // Update parent's isEditing state
+    setIsEditing(showDowntimeModal || editingLog !== null);
+  }, [showDowntimeModal, editingLog, setIsEditing]);
 
   const fetchLogs = async () => {
     try {
@@ -643,15 +670,176 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     );
   };
 
-  // Update the handleStatusChange function to not wait for subscription
-  const handleStatusChange = async (logId: string, newStatus: string, field: 'case_status' | 'workorder_status') => {
+  // Add new function to handle downtime time updates
+  const handleDowntimeUpdate = async (logId: string, startTime: string, endTime: string | null) => {
     try {
-      // Optimistically update both rawLogs and criticalEvents
-      setRawLogs(prevLogs => 
+      const duration = endTime 
+        ? Math.round((new Date(endTime).getTime() - new Date(startTime).getTime()) / (1000 * 60))
+        : null;
+
+      // Update both time and status
+      const { error } = await supabase
+        .from('log_entries')
+        .update({
+          dt_start_time: startTime,
+          dt_end_time: endTime,
+          dt_duration: duration,
+          case_status: endTime ? 'closed' : 'open' // Set status based on end time
+        })
+        .eq('id', logId);
+
+      if (error) throw error;
+
+      // Update local state
+      setRawLogs(prevLogs =>
         prevLogs.map(group => ({
           ...group,
-          logs: group.logs.map(log => 
-            log.id === logId 
+          logs: group.logs.map(log =>
+            log.id === logId
+              ? {
+                  ...log,
+                  dt_start_time: startTime,
+                  dt_end_time: endTime,
+                  dt_duration: duration,
+                  case_status: endTime ? 'closed' : 'open'
+                }
+              : log
+          )
+        }))
+      );
+
+      toast.success('Downtime times updated successfully');
+      setEditingDowntime(null);
+      setShowDowntimeModal(false);
+    } catch (error) {
+      console.error('Error updating downtime:', error);
+      toast.error('Failed to update downtime times');
+    }
+  };
+
+  // Modify handleStatusChange to handle workorders without time tracking
+  const handleStatusChange = async (logId: string, newStatus: Status, field: 'case_status' | 'workorder_status') => {
+    try {
+      const targetLog = rawLogs.flatMap(g => g.logs).find(l => l.id === logId);
+      if (!targetLog) return;
+
+      // For workorders, just update the status without any time tracking
+      if (field === 'workorder_status') {
+        const { error } = await supabase
+          .from('log_entries')
+          .update({ [field]: newStatus })
+          .eq('id', logId);
+
+        if (error) throw error;
+
+        // Update local state
+        setRawLogs(prevLogs =>
+          prevLogs.map(group => ({
+            ...group,
+            logs: group.logs.map(log =>
+              log.id === logId
+                ? { ...log, [field]: newStatus }
+                : log
+            )
+          }))
+        );
+
+        setCriticalEvents(prevEvents =>
+          prevEvents.map(event =>
+            event.id === logId
+              ? { ...event, [field]: newStatus }
+              : event
+          )
+        );
+
+        toast.success('Work order status updated successfully');
+        setActiveStatusId(null);
+        return;
+      }
+
+      // For downtime cases, handle time tracking
+      if (newStatus === 'closed' && !targetLog.dt_end_time) {
+        setEditingDowntime({
+          logId,
+          startTime: targetLog.dt_start_time || new Date().toISOString(),
+          endTime: new Date().toISOString(),
+          initialStartTime: targetLog.dt_start_time || new Date().toISOString(),
+          initialEndTime: targetLog.dt_end_time || new Date().toISOString()
+        });
+        setShowDowntimeModal(true);
+        return;
+      }
+
+      // If changing from closed to any other status, remove end time
+      if (targetLog.case_status === 'closed' && newStatus !== 'closed') {
+        // First update the status
+        const { error: statusError } = await supabase
+          .from('log_entries')
+          .update({ [field]: newStatus })
+          .eq('id', logId);
+
+        if (statusError) throw statusError;
+
+        // Then remove the end time and duration
+        const { error: timeError } = await supabase
+          .from('log_entries')
+          .update({
+            dt_end_time: null,
+            dt_duration: null
+          })
+          .eq('id', logId);
+
+        if (timeError) throw timeError;
+
+        // Update local state
+        setRawLogs(prevLogs =>
+          prevLogs.map(group => ({
+            ...group,
+            logs: group.logs.map(log =>
+              log.id === logId
+                ? {
+                    ...log,
+                    [field]: newStatus,
+                    dt_end_time: null,
+                    dt_duration: null
+                  }
+                : log
+            )
+          }))
+        );
+
+        setCriticalEvents(prevEvents =>
+          prevEvents.map(event =>
+            event.id === logId
+              ? {
+                  ...event,
+                  [field]: newStatus,
+                  dt_end_time: null,
+                  dt_duration: null
+                }
+              : event
+          )
+        );
+
+        toast.success('Status updated and end time removed');
+        setActiveStatusId(null);
+        return;
+      }
+
+      // Regular status update for downtime cases
+      const { error } = await supabase
+        .from('log_entries')
+        .update({ [field]: newStatus })
+        .eq('id', logId);
+
+      if (error) throw error;
+
+      // Update local state
+      setRawLogs(prevLogs =>
+        prevLogs.map(group => ({
+          ...group,
+          logs: group.logs.map(log =>
+            log.id === logId
               ? { ...log, [field]: newStatus }
               : log
           )
@@ -665,16 +853,6 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
             : event
         )
       );
-
-      // Send update to server
-      const { error } = await supabase
-        .from('log_entries')
-        .update({ [field]: newStatus })
-        .eq('id', logId);
-
-      if (error) {
-        throw error;
-      }
 
       toast.success('Status updated successfully');
       setActiveStatusId(null);
@@ -756,6 +934,147 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     };
   }, []);
 
+  // Add the modal component
+  const DowntimeModal = () => {
+    if (!editingDowntime || !showDowntimeModal) return null;
+
+    const [timeState, setTimeState] = useState({
+      startTime: editingDowntime.startTime,
+      endTime: editingDowntime.endTime || null
+    });
+
+    const handleTimeChange = (field: 'startTime' | 'endTime', value: string) => {
+      setTimeState(prev => ({
+        ...prev,
+        [field]: value
+      }));
+    };
+
+    const handleSave = () => {
+      handleDowntimeUpdate(
+        editingDowntime.logId,
+        timeState.startTime,
+        timeState.endTime
+      );
+      handleClose();
+    };
+
+    const handleClose = () => {
+      setShowDowntimeModal(false);
+      setEditingDowntime(null);
+    };
+
+    const handleOverlayClick = (e: React.MouseEvent) => {
+      if (e.target === e.currentTarget) {
+        handleClose();
+      }
+    };
+
+    return (
+      <div 
+        className="fixed inset-0 z-50 overflow-y-auto bg-black/50 flex items-center justify-center"
+        onClick={handleOverlayClick}
+      >
+        <div 
+          className="relative bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4 space-y-4"
+          onClick={e => e.stopPropagation()}
+        >
+          <div className="text-lg font-medium text-white mb-4">
+            Edit Downtime Times
+          </div>
+
+          <div className="space-y-6">
+            <div>
+              <DateTimePicker
+                label="Start Time"
+                value={timeState.startTime}
+                onChange={(value) => handleTimeChange('startTime', value)}
+                required
+              />
+            </div>
+
+            <div>
+              <DateTimePicker
+                label="End Time"
+                value={timeState.endTime || new Date().toISOString()}
+                onChange={(value) => handleTimeChange('endTime', value)}
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-3 mt-6">
+            <button
+              type="button"
+              onClick={handleClose}
+              className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white bg-gray-700 rounded"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-500"
+            >
+              Save Changes
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Modify the renderDowntimeInfo function
+  const renderDowntimeInfo = (log: LogEntry) => {
+    if (log.category !== 'downtime') return null;
+
+    // Check if log is from current shift
+    const isCurrentShift = activeShift && new Date(log.created_at) >= new Date(activeShift.started_at);
+
+    const handleEditClick = (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setEditingDowntime({
+        logId: log.id,
+        startTime: log.dt_start_time || new Date().toISOString(),
+        endTime: log.dt_end_time || null,
+        initialStartTime: log.dt_start_time || new Date().toISOString(),
+        initialEndTime: log.dt_end_time || null
+      });
+      setShowDowntimeModal(true);
+    };
+
+    return (
+      <div className="mt-1 flex items-center gap-4 text-xs">
+        <div className="flex items-center gap-1 text-yellow-400">
+          <Clock className="h-3 w-3" />
+          <span>Start: {format(new Date(log.dt_start_time!), 'HH:mm')}</span>
+          {!isCurrentShift && (
+            <button
+              onClick={handleEditClick}
+              className="p-1 text-gray-400 hover:text-white transition-colors hover:bg-white/10 rounded ml-1"
+              title="Edit times"
+            >
+              <Calendar className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+        {log.dt_end_time ? (
+          <>
+            <div className="flex items-center gap-1 text-yellow-400">
+              <Timer className="h-3 w-3" />
+              <span>End: {format(new Date(log.dt_end_time), 'HH:mm')}</span>
+            </div>
+            <div className="text-gray-400">
+              Duration: {log.dt_duration} min
+            </div>
+          </>
+        ) : (
+          <span className="text-yellow-400">Ongoing</span>
+        )}
+      </div>
+    );
+  };
+
   if (loading) {
     return (
       <div className="flex justify-center items-center h-64">
@@ -766,6 +1085,9 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
 
   return (
     <div className="space-y-6">
+      {/* Add the modal component */}
+      <DowntimeModal />
+
       {logs.map((shiftGroup, groupIndex) => (
         <div key={groupIndex} className="bg-gray-800/50 backdrop-blur-lg rounded-lg overflow-hidden border border-white/10">
           {/* Shift Header with Icon */}
@@ -1013,14 +1335,20 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
                           )}
                         </div>
 
-                        {/* Description */}
-                        <p className={`text-sm text-white ${expandedLogId === log.id ? 'whitespace-pre-wrap break-words' : 'truncate'}`}>
-                          {log.description}
-                        </p>
+                        {/* Description and Details */}
+                        <div className="flex-1 min-w-0">
+                          {/* Description */}
+                          <p className={`text-sm text-white ${expandedLogId === log.id ? 'whitespace-pre-wrap break-words' : 'truncate'}`}>
+                            {log.description}
+                          </p>
+
+                          {/* Downtime Information */}
+                          {log.category === 'downtime' && renderDowntimeInfo(log)}
+                        </div>
 
                         {/* Expand indicator */}
                         {shouldShowExpand(log) && !expandedLogId && (
-                          <span className="text-xs text-gray-500">Click to expand</span>
+                          <span className="text-xs text-gray-500 mt-1">Click to expand</span>
                         )}
                         
                         {/* Attachments in expanded view */}

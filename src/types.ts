@@ -19,7 +19,7 @@ export interface ActiveShift {
   salesforce_number: string;
 }
 
-export type ShiftType = 'morning' | 'afternoon' | 'night' | 'data-mc' | 'data-sc';
+export type ShiftType = 'morning' | 'afternoon' | 'night';
 
 export interface SearchFilters {
   startDate: string;
@@ -64,6 +64,10 @@ export interface LogEntry {
   engineers?: string[];
   attachments?: Attachment[];
   user_id?: string;
+  // Downtime Data
+  dt_start_time?: string;
+  dt_end_time?: string | null;
+  dt_duration?: number | null;
 }
 
 export type LogCategory = 'general' | 'error' | 'downtime' | 'workorder' | 'data-mc' | 'data-sc' | 'shift';

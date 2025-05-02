@@ -1,0 +1,18 @@
+/* Custom scrollbar styles */
+.scrollbar-hide::-webkit-scrollbar {
+  width: 4px;
+}
+
+.scrollbar-hide::-webkit-scrollbar-track {
+  background: rgba(75, 85, 99, 0.3);
+  border-radius: 2px;
+}
+
+.scrollbar-hide::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.5);
+  border-radius: 2px;
+}
+
+.scrollbar-hide::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.7);
+} 

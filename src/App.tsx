@@ -281,6 +281,7 @@ function App() {
   const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([]);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [showDashboard, setShowDashboard] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
 
   // Add array of emojis for random selection
   const refreshEmojis = ["🔄", "✨", "🚀", "💫", "🎯", "🌟", "⚡️", "🔮"];
@@ -289,11 +290,13 @@ function App() {
   // Function to change emoji randomly
   useEffect(() => {
     const interval = setInterval(() => {
-      const randomEmoji = refreshEmojis[Math.floor(Math.random() * refreshEmojis.length)];
-      setCurrentEmoji(randomEmoji);
+      if (!isEditing) {  // Only update emoji if not editing
+        const randomEmoji = refreshEmojis[Math.floor(Math.random() * refreshEmojis.length)];
+        setCurrentEmoji(randomEmoji);
+      }
     }, 2000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isEditing]);
 
   const resetSearchFilters = () => {
     setSearchFilters({
@@ -303,38 +306,8 @@ function App() {
     });
   };
 
-  const handleRefresh = async () => {
-    try {
-      setLoading(true);
-      
-      // Create a timeout promise
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Refresh timeout')), 10000); // 10 second timeout
-      });
-
-      // Race between the refresh operations and timeout
-      await Promise.race([
-        Promise.all([
-          fetchActiveShift(),
-          fetchRecentLogs()
-        ]),
-        timeoutPromise
-      ]);
-
-      // Reset UI states
-      resetSearchFilters();
-      setShowAllLogs(false);
-      setShowAdvancedSearch(false);
-      setShowDateFilter(false);
-      toast.success('Page refreshed successfully');
-    } catch (error) {
-      console.error('Error refreshing data:', error);
-      toast.error('Refresh failed - reloading page');
-      // Force page reload as fallback
-      window.location.reload();
-    } finally {
-      setLoading(false);
-    }
+  const handleRefresh = () => {
+    window.location.reload();
   };
 
   // Add loading timeout for initial auth
@@ -345,30 +318,45 @@ function App() {
     async function initializeAuth() {
       try {
         setLoading(true);
+        console.log('Starting auth initialization...');
         
-        // Set a timeout to force reload if initialization takes too long
+        // Set a shorter timeout
         timeoutId = setTimeout(() => {
           if (mounted) {
             console.error('Auth initialization timeout');
-            window.location.reload();
+            setLoading(false);
+            setSession(null);
+            toast.error('Connection timeout - please refresh the page');
           }
-        }, 15000); // 15 second timeout
+        }, 8000); // 8 second timeout
 
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
         
-        if (sessionError) throw sessionError;
+        if (sessionError) {
+          console.error('Session error:', sessionError);
+          throw sessionError;
+        }
+
+        console.log('Session retrieved:', session ? 'Valid session' : 'No session');
 
         if (mounted) {
           setSession(session);
           if (session) {
+            try {
             await fetchActiveShift();
+              console.log('Active shift fetched successfully');
+            } catch (shiftError) {
+              console.error('Error fetching active shift:', shiftError);
+              toast.error('Error loading shift data');
+          }
           }
         }
       } catch (error) {
         console.error('Auth initialization error:', error);
         if (mounted) {
-          toast.error('Failed to initialize - reloading page');
-          window.location.reload();
+          setLoading(false);
+          setSession(null);
+          toast.error('Failed to initialize - please refresh the page');
         }
       } finally {
         if (mounted) {
@@ -381,10 +369,15 @@ function App() {
     initializeAuth();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      console.log('Auth state changed:', _event, session ? 'Has session' : 'No session');
       if (mounted) {
         setSession(session);
         if (session) {
-          await fetchActiveShift();
+          try {
+            await fetchActiveShift();
+          } catch (error) {
+            console.error('Error fetching active shift after auth change:', error);
+          }
         }
         setLoading(false);
       }
@@ -411,7 +404,9 @@ function App() {
           table: 'log_entries'
         },
         async (payload) => {
-          await fetchRecentLogs();
+          if (!isEditing) {  // Only fetch logs if not editing
+            await fetchRecentLogs();
+          }
         }
       )
       .subscribe();
@@ -419,7 +414,7 @@ function App() {
     return () => {
       logChannel.unsubscribe();
     };
-  }, []);
+  }, [isEditing]);
 
   useEffect(() => {
     const checkAdminStatus = async () => {
@@ -709,8 +704,8 @@ function App() {
           message: {
             borderRadius: '0.5rem',
             fontSize: '0.875rem',
-          },
-        },
+                  },
+                },
               }}
               theme="dark"
               providers={[]}
@@ -1103,29 +1098,22 @@ function App() {
     try {
       setLoading(true);
       
-      // Set a timeout for dashboard loading
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Dashboard loading timeout')), 10000);
-      });
-
-      await Promise.race([
-        Promise.all([
-          setShowDashboard(false),
-          setShowAllLogs(true),
-          setShowAdvancedSearch(true),
-          setSearchFilters({
-            startDate: date,
-            endDate: date,
-            shiftType: shiftType as ShiftType,
-            keyword: '',
-          })
-        ]),
-        timeoutPromise
+      // Switch to All Logs view and set filters
+      await Promise.all([
+        setShowDashboard(false),
+        setShowAllLogs(true),
+        setShowAdvancedSearch(true),
+        setSearchFilters({
+          startDate: date,
+          endDate: date,
+          shiftType: shiftType as ShiftType,
+          keyword: '',
+          category: undefined
+        })
       ]);
     } catch (error) {
       console.error('Error loading dashboard entry:', error);
-      toast.error('Failed to load dashboard - reloading page');
-      window.location.reload();
+      toast.error('Failed to load dashboard entry');
     } finally {
       setLoading(false);
     }
@@ -1361,6 +1349,11 @@ function App() {
                               </span>
                             </div>
                             <p className="text-xs text-white mt-1">{log.description}</p>
+                            {log.category === 'downtime' && log.dt_duration && (
+                              <div className="text-xs text-gray-400 mt-1">
+                                Duration: {Math.floor(log.dt_duration / 60)}h {log.dt_duration % 60}m
+                              </div>
+                            )}
                           </div>
                         ))
                       ) : (
@@ -1511,6 +1504,7 @@ function App() {
                       showAllLogs={showAllLogs}
           searchFilters={searchFilters}
                       activeShift={activeShift}
+                      setIsEditing={setIsEditing}
                     />
                   </div>
                 </div>
@@ -1569,29 +1563,6 @@ function App() {
             <nav className="space-y-1 mt-4">
               <button 
                 onClick={() => {
-                  setShowDashboard(true);
-                  setShowAllLogs(false);
-                }}
-                className={`sidebar-item ${isSidebarOpen ? 'expanded' : 'collapsed'} group ${
-                  showDashboard 
-                    ? 'text-white' 
-                    : 'text-gray-400 hover:text-white hover:bg-white/5'
-                }`}
-              >
-                <div className="sidebar-icon">
-                  <LayoutDashboard className="h-5 w-5" />
-                </div>
-                {isSidebarOpen ? (
-                  <span className="sidebar-text">Dashboard</span>
-                ) : (
-                  <span className="sidebar-tooltip text-sm text-white">
-                    Dashboard
-                  </span>
-                )}
-              </button>
-
-              <button 
-                onClick={() => {
                   setShowDashboard(false);
                   setShowAllLogs(false);
                   resetSearchFilters();
@@ -1616,7 +1587,7 @@ function App() {
                   </span>
                 )}
               </button>
-              
+
               <button 
                 onClick={() => {
                   setShowDashboard(false);
@@ -1637,6 +1608,29 @@ function App() {
                 ) : (
                   <span className="sidebar-tooltip text-sm text-white">
                     All Logs
+                  </span>
+                )}
+              </button>
+
+              <button 
+                onClick={() => {
+                  setShowDashboard(true);
+                  setShowAllLogs(false);
+                }}
+                className={`sidebar-item ${isSidebarOpen ? 'expanded' : 'collapsed'} group ${
+                  showDashboard 
+                    ? 'text-white' 
+                    : 'text-gray-400 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <div className="sidebar-icon">
+                  <LayoutDashboard className="h-5 w-5" />
+                </div>
+                {isSidebarOpen ? (
+                  <span className="sidebar-text">Dashboard</span>
+                ) : (
+                  <span className="sidebar-tooltip text-sm text-white">
+                    Dashboard
                   </span>
                 )}
               </button>
