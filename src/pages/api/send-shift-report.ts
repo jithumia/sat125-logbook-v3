@@ -16,10 +16,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const { subject, body } = req.body;
 
-    // Send mail
+    // Send mail to the group alias. The mail server will expand 'shiftreport' to all users in the /etc/aliases group.
     await transporter.sendMail({
       from: 'shiftreport@mcrs3.apollo.org',
-      to: 'shiftreport@mcrs3.apollo.org',
+      to: 'shiftreport', // group alias, expanded by mail server
       subject,
       text: body,
     });

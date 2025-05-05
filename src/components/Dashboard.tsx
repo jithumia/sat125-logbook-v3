@@ -18,8 +18,6 @@ import 'chartjs-adapter-date-fns';
 import toast from 'react-hot-toast';
 import { X, Mail } from 'lucide-react';
 import ShiftReport from './ShiftReport';
-import html2canvas from 'html2canvas';
-import { ShiftType, LogCategory, Status } from '../types';
 
 // Register ChartJS components
 ChartJS.register(
@@ -41,9 +39,9 @@ interface DashboardProps {
 interface LogEntry {
   id: string;
   created_at: string;
-  category: LogCategory;
+  category: string;
   description: string;
-  shift_type: ShiftType;
+  shift_type: string;
   mc_setpoint?: number;
   yoke_temperature?: number;
   arc_current?: number;
@@ -52,10 +50,10 @@ interface LogEntry {
   p1e_y_width?: number;
   p2e_x_width?: number;
   p2e_y_width?: number;
-  inserted_source_number?: number;
-  workorder_status?: Status;
+  inserted_source_number?: string;
+  workorder_status?: string;
   workorder_number?: string;
-  case_status?: Status;
+  case_status?: string;
   case_number?: string;
   dt_start_time?: string;
   dt_end_time?: string;
@@ -126,7 +124,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick }) => {
   const [showCustomRange, setShowCustomRange] = useState(false);
   const [showShiftReport, setShowShiftReport] = useState(false);
   const [shiftData, setShiftData] = useState<{
-    shiftType: ShiftType;
+    shiftType: string;
     startTime: string;
     endTime: string | null;
     logs: LogEntry[];
@@ -315,9 +313,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick }) => {
               currentShift.endTime = log.created_at;
             }
             // Start new shift
-            const validShiftType = ['morning', 'afternoon', 'night'].includes(log.shift_type) ? log.shift_type : 'morning';
             currentShift = {
-              shiftType: validShiftType as 'morning' | 'afternoon' | 'night',
+              shiftType: log.shift_type,
               startTime: log.created_at,
               endTime: null,
               logs: [log]
@@ -478,14 +475,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick }) => {
       const itemDate = new Date(item[dateField]);
       return isWithinInterval(itemDate, range);
     });
-  };
-
-  // Function to capture dashboard screenshot
-  const captureDashboardScreenshot = async () => {
-    const dashboardElement = document.getElementById('dashboard-main');
-    if (!dashboardElement) return null;
-    const canvas = await html2canvas(dashboardElement);
-    return canvas.toDataURL('image/png');
   };
 
   if (loading) {

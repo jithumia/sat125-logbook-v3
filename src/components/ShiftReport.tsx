@@ -97,94 +97,134 @@ const ShiftReport: React.FC<ShiftReportProps> = ({ isOpen, onClose, shifts }) =>
     };
   };
 
+  const pad = (str: string, len: number) => (str || '').toString().padEnd(len, ' ');
+
   const formatShiftSummary = (summary: ShiftSummary): string => {
     const sections: string[] = [];
     const dateStr = format(new Date(summary.startTime), 'MMMM d, yyyy');
-    const startTimeStr = format(new Date(summary.startTime), 'HH:mm');
-    const endTimeStr = summary.endTime ? format(new Date(summary.endTime), 'HH:mm') : 'Ongoing';
 
-    // Greeting
+    // Greeting and intro
     sections.push('Dear Team,');
     sections.push('');
-
-    // Header
-    sections.push('='.repeat(60));
-    sections.push(`${summary.shiftType.toUpperCase()} SHIFT REPORT`.padStart(35 + summary.shiftType.length / 2));
-    sections.push('='.repeat(60));
-    sections.push(`Date: ${dateStr}   Time: ${startTimeStr} - ${endTimeStr}`);
-    sections.push(`SVMX: ${summary.svmxNumber}   Engineers: ${summary.engineers.join(', ')}`);
-    sections.push('-'.repeat(60));
-
-    // Critical Issues
-    if (summary.errors.length > 0) {
-      sections.push('CRITICAL ISSUES:');
-      summary.errors.forEach(error => {
-        sections.push(`- ${error.description}`);
-      });
+    sections.push(`Please find the following report summarizing the ${summary.shiftType} Shift activities and events for SVMX No: ${summary.svmxNumber} on ${dateStr}:`);
+    sections.push('');
+    if (summary.engineers.length > 0) {
+      sections.push(`Engineers: ${summary.engineers.join(', ')}`);
       sections.push('');
     }
 
-    // Downtime Cases (tabular)
+    // General
+    if (summary.general.length > 0) {
+      sections.push('');
+      sections.push('GENERAL:');
+      summary.general.forEach(note => {
+        sections.push(note.description);
+      });
+    }
+
+    // Main Coil Tuning Entries
+    if (summary.mainCoilTuning.length > 0) {
+      sections.push('');
+      sections.push('MAIN COIL TUNING ENTRIES:');
+      sections.push(`Sessions: ${summary.mainCoilTuning.length}`);
+      summary.mainCoilTuning.forEach(entry => {
+        sections.push(
+          `MC Current setpoint: ${entry.mc_setpoint} A | Filament Current: ${entry.filament_current} A | Arc Current: ${entry.arc_current} mA | Yoke Temperature: ${entry.yoke_temperature} c | P1E Width: X: ${entry.p1e_x_width}mm,  Y: ${entry.p1e_y_width}mm | P2E Width: X: ${entry.p2e_x_width}mm,  Y: ${entry.p2e_y_width}mm`
+        );
+      });
+    }
+
+    // Errors
+    if (summary.errors.length > 0) {
+      sections.push('');
+      sections.push('ERRORS:');
+      summary.errors.forEach(error => {
+        sections.push(error.description);
+      });
+    }
+
+    // Source changes
+    let latestSourceChange = summary.sourceChange.length > 0 ? summary.sourceChange[summary.sourceChange.length - 1] : null;
+    let latestMainCoil = summary.mainCoilTuning.length > 0 ? summary.mainCoilTuning[summary.mainCoilTuning.length - 1] : null;
+    let currentSourceLine = '';
+    if (latestSourceChange && latestMainCoil) {
+      currentSourceLine = `Current installed source: #${latestSourceChange.inserted_source_number} | Filament current: ${latestMainCoil.filament_current} A | Arc current: ${latestMainCoil.arc_current} mA`;
+    } else if (latestSourceChange) {
+      currentSourceLine = `Current installed source: #${latestSourceChange.inserted_source_number}`;
+    } else if (latestMainCoil) {
+      currentSourceLine = `Current installed source: (unknown) | Filament current: ${latestMainCoil.filament_current} A | Arc current: ${latestMainCoil.arc_current} mA`;
+    } else {
+      currentSourceLine = `Current installed source: (unknown)`;
+    }
+    sections.push('');
+    sections.push('SOURCE CHANGES:');
+    sections.push(currentSourceLine);
+    if (summary.sourceChange.length === 0) {
+      sections.push('no source change happened in this shift');
+    } else {
+      sections.push(`Source changes: ${summary.sourceChange.length}`);
+      summary.sourceChange.forEach(sc => {
+        sections.push(
+          `Removed Source: #${sc.removed_source_number} Filament current ${sc.removed_filament_current}A Arc current ${sc.removed_arc_current}mA, Inserted Source : #${sc.inserted_source_number} Filament current ${sc.inserted_filament_current}A Arc current ${sc.inserted_arc_current}mA`
+        );
+      });
+    }
+
+    // Downtime
     if (summary.downtime.length > 0) {
-      sections.push('DOWNTIME CASES:');
-      sections.push('Case      Status     Duration   Description');
+      sections.push('');
+      sections.push('DOWNTIME:');
+      sections.push(`${pad('Case', 10)}${pad('Status', 14)}${pad('Duration', 10)}Description`);
       summary.downtime.forEach(dt => {
         const duration = dt.dt_duration ? `${Math.floor(dt.dt_duration / 60)}h ${dt.dt_duration % 60}m` : 'Ongoing';
-        sections.push(`${(dt.case_number || '').padEnd(10)} ${(dt.case_status || '').toUpperCase().padEnd(10)} ${duration.padEnd(9)} ${dt.description}`);
+        sections.push(
+          `${pad(dt.case_number || '', 10)}${pad((dt.case_status || '').toUpperCase(), 14)}${pad(duration, 10)}${dt.description}`
+        );
       });
-      sections.push('');
     }
 
-    // Work Orders (tabular)
+    // Workorder
     if (summary.workorders.length > 0) {
-      sections.push('WORK ORDERS:');
-      sections.push('WO Number   Status        Description');
+      sections.push('');
+      sections.push('WORKORDER:');
+      sections.push(`${pad('WO Number', 10)}${pad('Status', 14)}Description`);
       summary.workorders.forEach(wo => {
-        sections.push(`${(wo.workorder_number || '').padEnd(11)} ${(wo.workorder_status || '').toUpperCase().padEnd(12)} ${wo.description}`);
+        sections.push(
+          `${pad(wo.workorder_number || '', 10)}${pad((wo.workorder_status || '').toUpperCase(), 14)}${wo.description}`
+        );
       });
-      sections.push('');
-    }
-
-    // Source Changes (concise)
-    if (summary.sourceChange.length > 0) {
-      sections.push('SOURCE CHANGES:');
-      summary.sourceChange.forEach(sc => {
-        sections.push(`- Removed: #${sc.removed_source_number} (${sc.removed_filament_current}A/${sc.removed_arc_current}mA), Inserted: #${sc.inserted_source_number} (${sc.inserted_filament_current}A/${sc.inserted_arc_current}mA)`);
-      });
-      sections.push('');
-    }
-
-    // Main Coil Tuning (summary)
-    if (summary.mainCoilTuning.length > 0) {
-      sections.push('MAIN COIL TUNING:');
-      sections.push(`Sessions: ${summary.mainCoilTuning.length}`);
-      const latest = summary.mainCoilTuning[0];
-      sections.push(`Latest: MC=${latest.mc_setpoint}A, Yoke=${latest.yoke_temperature}°C, Fil=${latest.filament_current}A, Arc=${latest.arc_current}mA`);
-      sections.push(`P1E: ${latest.p1e_x_width}/${latest.p1e_y_width}mm, P2E: ${latest.p2e_x_width}/${latest.p2e_y_width}mm`);
-      sections.push('');
-    }
-
-    // General Notes
-    if (summary.general.length > 0) {
-      sections.push('GENERAL NOTES:');
-      summary.general.forEach(note => {
-        sections.push(`- ${note.description}`);
-      });
-      sections.push('');
     }
 
     // Notes for Next Shift
-    if (summary.notesForNextShift) {
-      sections.push('NOTES FOR NEXT SHIFT:');
-      sections.push(summary.notesForNextShift);
+    let notesForNextShift = summary.notesForNextShift || '';
+    let filamentArcNote = '';
+    const shiftEndEntry = currentShift?.logs.find(log => log.category === 'shift' && log.description.toLowerCase().includes('shift ended'));
+    if (shiftEndEntry) {
+      // Try to extract filament and arc current from the description
+      // Example: '...Filament: 182.54A, Arc: 133.30mA ...'
+      const filamentMatch = shiftEndEntry.description.match(/filament[:=]?\s*([\d.]+)\s*a/i);
+      const arcMatch = shiftEndEntry.description.match(/arc[:=]?\s*([\d.]+)\s*m?a/i);
+      if (filamentMatch || arcMatch) {
+        filamentArcNote = `Filament: ${filamentMatch ? filamentMatch[1] + 'A' : ''}${filamentMatch && arcMatch ? ', ' : ''}${arcMatch ? 'Arc: ' + arcMatch[1] + 'mA' : ''}`;
+      }
+      // If the note is in the description after 'Note:'
+      const noteMatch = shiftEndEntry.description.match(/note[:=]?\s*(.*)$/i);
+      if (noteMatch && noteMatch[1]) {
+        notesForNextShift = noteMatch[1].trim();
+      }
+    }
+    if (filamentArcNote || notesForNextShift) {
       sections.push('');
+      sections.push('NOTES FOR NEXT SHIFT:');
+      if (filamentArcNote) sections.push(filamentArcNote);
+      if (notesForNextShift && (!filamentArcNote || notesForNextShift !== filamentArcNote)) sections.push(notesForNextShift);
     }
 
     // Closing
-    sections.push('-'.repeat(60));
-    sections.push('Best regards,');
-    sections.push('SAT.125 Logbook System');
-    sections.push('='.repeat(60));
+    sections.push('');
+    sections.push('Thank you,');
+    sections.push(`${summary.shiftType} Shift Team`);
+
     return sections.join('\n');
   };
 
@@ -202,7 +242,7 @@ const ShiftReport: React.FC<ShiftReportProps> = ({ isOpen, onClose, shifts }) =>
       const emailSubject = `${summary.shiftType} Report (${dateStr}) - SVMX No: ${summary.svmxNumber}`;
 
       // Send email using your backend API
-      const response = await fetch('/api/send-shift-report', {
+      const response = await fetch('http://10.2.70.221:5000/send_shift_report', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
