@@ -38,6 +38,7 @@ export interface LogEntry {
   case_number?: string;
   case_status?: Status;
   workorder_number?: string;
+  workorder_title?: string;
   workorder_status?: Status;
   // Main Coil Tuning Data
   mc_setpoint?: number;
@@ -68,6 +69,7 @@ export interface LogEntry {
   dt_start_time?: string;
   dt_end_time?: string | null;
   dt_duration?: number | null;
+  shift_id?: string;
 }
 
 export type LogCategory = 'general' | 'error' | 'downtime' | 'workorder' | 'data-mc' | 'data-sc' | 'shift';
@@ -81,6 +83,7 @@ export interface Attachment {
   file_size: number;
   file_path: string;
   created_at: string;
+  url?: string;  // Optional URL for signed URLs
 }
 
 export interface RecentLog {

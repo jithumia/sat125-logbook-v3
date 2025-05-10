@@ -81,21 +81,18 @@ const ShiftReportModal: React.FC<ShiftReportModalProps> = ({ onClose, activeShif
         id: startLog.id,
         shift_type: startLog.shift_type,
         started_at: startLog.created_at,
-        started_by: startLog.user_id,
         salesforce_number: salesforceNumber,
-        created_at: startLog.created_at,
-        engineers: engineerNames.split(', ').map(name => ({
+        engineers: engineerNames.split(', ').map((name: string) => ({
           engineer: { name, id: '', user_id: '', created_at: '' }
-        }))
+        })),
+        ended_at: null,
+        user_id: ''
       };
 
       // Get all logs between start and end time
       const { data: logs, error: logsError } = await supabase
         .from('log_entries')
-        .select(`
-          *,
-          attachments (*)
-        `)
+        .select(`*, attachments(*)`)
         .eq('shift_type', shift.shift_type)
         .gte('created_at', startLog.created_at)
         .lte('created_at', endLog.created_at)
@@ -109,7 +106,7 @@ const ShiftReportModal: React.FC<ShiftReportModalProps> = ({ onClose, activeShif
         engineers: engineerNames.split(', '),
         endTime: endLog.created_at,
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error fetching shift data:', error);
       toast.error('Failed to fetch shift data');
       onClose();
@@ -147,7 +144,7 @@ const ShiftReportModal: React.FC<ShiftReportModalProps> = ({ onClose, activeShif
     report += `Engineers: ${engineers.join(', ')}\n\n`;
 
     // Add Main Coil Tuning Entries if available
-    const dataCollectionLogs = groupedLogs['data-collection'] || [];
+    const dataCollectionLogs = groupedLogs['data-mc'] || [];
     if (dataCollectionLogs.length > 0) {
       report += 'Main Coil Tuning Entries:\n';
       const latestData = dataCollectionLogs[dataCollectionLogs.length - 1];
@@ -156,8 +153,8 @@ const ShiftReportModal: React.FC<ShiftReportModalProps> = ({ onClose, activeShif
         report += `Filament Current: ${latestData.filament_current} | `;
         report += `Arc Current: ${latestData.arc_current} | `;
         report += `Yoke Temperature: ${latestData.yoke_temperature} | `;
-        report += `P1E Width: ${latestData.pie_width} | `;
-        report += `P2E Width: ${latestData.p2e_width}\n\n`;
+        report += `P1E Width: X: ${latestData.p1e_x_width}, Y: ${latestData.p1e_y_width} | `;
+        report += `P2E Width: X: ${latestData.p2e_x_width}, Y: ${latestData.p2e_y_width}\n\n`;
       }
     }
 
@@ -292,7 +289,7 @@ const ShiftReportModal: React.FC<ShiftReportModalProps> = ({ onClose, activeShif
 
       toast.success('Shift report sent successfully');
       onClose();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error sending report:', error);
       toast.error(error.message || 'Failed to send shift report');
     } finally {

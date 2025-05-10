@@ -13,16 +13,27 @@ const FileUpload: React.FC<FileUploadProps> = ({ files, onFilesChange }) => {
 
   const validateFile = (file: File): boolean => {
       // Check file type
-      const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'video/mp4', 'video/quicktime'];
+      const validTypes = [
+        'image/jpeg', 
+        'image/png', 
+        'image/gif', 
+        'video/mp4', 
+        'video/quicktime',
+        'text/plain',
+        'text/csv',
+        'text/x-log',
+        'application/json',
+        'application/xml'
+      ];
       if (!validTypes.includes(file.type)) {
-        toast.error(`Invalid file type: ${file.name}`);
+        toast.error(`Invalid file type: ${file.name}. Supported types: Images, Videos, Text files, Logs, CSV, JSON, XML`);
         return false;
       }
       
       // Check file size (50MB limit)
       const maxSize = 50 * 1024 * 1024; // 50MB in bytes
       if (file.size > maxSize) {
-        toast.error(`File too large: ${file.name}`);
+        toast.error(`File too large: ${file.name}. Maximum size is 50MB`);
         return false;
       }
       
@@ -98,15 +109,15 @@ const FileUpload: React.FC<FileUploadProps> = ({ files, onFilesChange }) => {
           ref={fileInputRef}
           type="file"
           multiple
-          accept="image/jpeg,image/png,image/gif,video/mp4,video/quicktime"
-            onChange={(e) => handleFiles(e.target.files)}
+          accept="image/jpeg,image/png,image/gif,video/mp4,video/quicktime,text/plain,text/csv,text/x-log,application/json,application/xml"
+          onChange={(e) => handleFiles(e.target.files)}
           className="hidden"
         />
           <p className="text-sm text-gray-400">
             or drag and drop files here
           </p>
           <p className="text-xs text-gray-500">
-          Max 50MB per file. Supported: JPG, PNG, GIF, MP4, MOV
+          Max 50MB per file. Supported: Images, Videos, Text files, Logs, CSV, JSON, XML
           </p>
         </div>
       </div>

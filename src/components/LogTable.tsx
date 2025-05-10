@@ -54,6 +54,9 @@ const STATUS_OPTIONS: StatusOption[] = [
   { value: 'closed', label: 'Closed', color: 'bg-gray-500' }
 ];
 
+// At the top of the file, after importing Attachment, add:
+type AttachmentWithUrl = Attachment & { url?: string };
+
 const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeShift, setIsEditing }) => {
   const [rawLogs, setRawLogs] = useState<ShiftGroup[]>([]);
   const [logs, setLogs] = useState<ShiftGroup[]>([]);
@@ -72,15 +75,39 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     initialEndTime: string | null;
   } | null>(null);
   const [showDowntimeModal, setShowDowntimeModal] = useState(false);
+  const [refreshAfterEditing, setRefreshAfterEditing] = useState(false);
 
   // Add a ref to track if we're currently editing
   const isEditing = useRef(false);
 
   useEffect(() => {
     isEditing.current = showDowntimeModal || editingLog !== null;
-  }, [showDowntimeModal, editingLog]);
+    
+    // Trigger a refresh when editing is completed
+    if (refreshAfterEditing && !isEditing.current) {
+      fetchLogs();
+      fetchCriticalEvents();
+      setRefreshAfterEditing(false);
+    }
+  }, [showDowntimeModal, editingLog, refreshAfterEditing]);
 
   useEffect(() => {
+    let debounceTimeout: NodeJS.Timeout | null = null;
+    let isSubscribed = true;
+    const debouncedFetch = () => {
+      if (debounceTimeout) clearTimeout(debounceTimeout);
+      debounceTimeout = setTimeout(() => {
+        if (isSubscribed) {
+          if (!isEditing.current) {
+            fetchLogs();
+            fetchCriticalEvents();
+          } else {
+            // If we're editing, set a flag to refresh after editing is done
+            setRefreshAfterEditing(true);
+          }
+        }
+      }, 400);
+    };
     fetchLogs();
     fetchCriticalEvents();
     supabase.from('engineers').select('id, name').then(({ data }) => {
@@ -90,10 +117,8 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
         setEngineerMap(map);
       }
     });
-
-    // Subscribe to real-time changes
+    // Subscribe to real-time changes only if visible (i.e., current shift or all logs)
     const channel = supabase.channel('log-updates');
-    
     const subscription = channel
       .on(
         'postgres_changes',
@@ -102,20 +127,13 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
           schema: 'public',
           table: 'log_entries'
         },
-        async () => {
-          // Only refresh if we're not currently editing
-          if (!isEditing.current) {
-            await Promise.all([
-              fetchLogs(),
-              fetchCriticalEvents()
-            ]);
-          }
-        }
+        debouncedFetch
       )
       .subscribe();
-
     return () => {
+      isSubscribed = false;
       subscription.unsubscribe();
+      if (debounceTimeout) clearTimeout(debounceTimeout);
     };
   }, [showAllLogs, searchFilters, activeShift]);
 
@@ -142,11 +160,31 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
         `)
         .order('created_at', { ascending: false });
 
+      // Debug: Log activeShift and showAllLogs
+      console.log('fetchLogs: showAllLogs', showAllLogs);
+      console.log('fetchLogs: activeShift', activeShift);
+
       // Apply filters based on showAllLogs
       if (!showAllLogs && activeShift) {
-        // If showing current shift only, filter by active shift start time
-        const shiftStartTime = new Date(activeShift.started_at);
-        query = query.gte('created_at', shiftStartTime.toISOString());
+        // Instead of using activeShift.started_at, find the latest 'shift started' log for the current shift type
+        const { data: shiftStartLogs, error: shiftStartError } = await supabase
+          .from('log_entries')
+          .select('created_at')
+          .eq('category', 'shift')
+          .eq('shift_type', activeShift.shift_type)
+          .ilike('description', '%shift started%')
+          .order('created_at', { ascending: false })
+          .limit(1);
+        if (shiftStartError) {
+          console.error('fetchLogs: error fetching shift start log', shiftStartError);
+        }
+        let shiftStartTime = activeShift.started_at;
+        if (shiftStartLogs && shiftStartLogs.length > 0) {
+          shiftStartTime = shiftStartLogs[0].created_at;
+        }
+        // Debug: Log shiftStartTime
+        console.log('fetchLogs: using shiftStartTime for filter', shiftStartTime);
+        query = query.gte('created_at', shiftStartTime);
       }
 
       // Handle date filters
@@ -170,6 +208,13 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
       // Execute the query
       const { data, error } = await query;
 
+      // Debug: Log fetched data
+      console.log('fetchLogs: fetched data', data);
+      if (data && data.length > 0) {
+        console.log('fetchLogs: first log created_at', data[data.length - 1].created_at);
+        console.log('fetchLogs: last log created_at', data[0].created_at);
+      }
+
       if (error) {
         console.error('Supabase query error:', error);
         throw error;
@@ -181,12 +226,15 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
         return;
       }
 
+      // Add this line:
+      const logsWithUrls = await addAttachmentUrlsToLogs(data);
+
       // Process the results
       const groupedLogs: ShiftGroup[] = [];
       let currentGroup: ShiftGroup | null = null;
 
       // Sort data chronologically
-      const sortedData = [...data].sort((a, b) => 
+      const sortedData = [...logsWithUrls].sort((a, b) => 
         new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       );
 
@@ -723,14 +771,25 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
       const targetLog = rawLogs.flatMap(g => g.logs).find(l => l.id === logId);
       if (!targetLog) return;
 
-      // For workorders, just update the status without any time tracking
+      // For workorders, update both log_entries and workorders tables
       if (field === 'workorder_status') {
-        const { error } = await supabase
+        // Update log_entries table
+        const { error: logError } = await supabase
           .from('log_entries')
           .update({ [field]: newStatus })
           .eq('id', logId);
 
-        if (error) throw error;
+        if (logError) throw logError;
+
+        // Update workorders table if workorder_number exists
+        if (targetLog.workorder_number) {
+          const { error: workorderError } = await supabase
+            .from('workorders')
+            .update({ status: newStatus })
+            .eq('workorder_number', targetLog.workorder_number);
+
+          if (workorderError) throw workorderError;
+        }
 
         // Update local state
         setRawLogs(prevLogs =>
@@ -1075,6 +1134,43 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     );
   };
 
+  // In addAttachmentUrlsToLogs, add a type annotation:
+  async function addAttachmentUrlsToLogs(logs: (LogEntry & { attachments?: AttachmentWithUrl[] })[]) {
+    for (const log of logs) {
+      if (log.attachments && log.attachments.length > 0) {
+        for (const attachment of log.attachments) {
+          // Generate signed URL for each attachment
+          const { data, error } = await supabase.storage
+            .from('attachments')
+            .createSignedUrl(attachment.file_path, 3600);
+          if (!error && data?.signedUrl) {
+            attachment.url = data.signedUrl;
+          } else {
+            attachment.url = '#';
+          }
+        }
+      }
+    }
+    return logs;
+  }
+
+  function getPreviousRemovedFilamentCounter(log: LogEntry, logs: LogEntry[]): number | null {
+    // Find the previous data-sc log before this one, for the same removed_source_number
+    const currentIndex = logs.findIndex(l => l.id === log.id);
+    if (currentIndex === -1) return null;
+    for (let i = currentIndex - 1; i >= 0; i--) {
+      const prev = logs[i];
+      if (
+        prev.category === 'data-sc' &&
+        prev.removed_source_number === log.removed_source_number &&
+        typeof prev.removed_filament_counter === 'number'
+      ) {
+        return prev.removed_filament_counter;
+      }
+    }
+    return null;
+  }
+
   if (loading) {
     return (
       <div className="flex justify-center items-center h-64">
@@ -1181,212 +1277,277 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
                       </form>
                 ) : (
                       <>
-                        {/* Status badges and machine parameters row */}
-                        <div className="flex items-center flex-wrap gap-2">
-                          {/* Status badges for downtime and workorder */}
-                          {(log.category === 'downtime' || log.category === 'workorder') && (
-                            <div className="relative status-menu">
+                        {/* Custom rendering for workorder entries */}
+                        {log.category === 'workorder' ? (
+                          <>
+                            <div className="flex items-center flex-wrap gap-2">
+                              <div className="relative status-menu">
                               <button
-                                onClick={(e) => handleStatusClick(e, log.id)}
-                                className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                                  getStatusStyle(log.category === 'downtime' 
-                                    ? (log.case_status || 'open')
-                                    : (log.workorder_status || 'open'))
-                                }`}
+                                  onClick={(e) => handleStatusClick(e, log.id)}
+                                  className={`px-2 py-0.5 rounded-full text-xs font-medium ${getStatusStyle(log.workorder_status || 'open')}`}
                               >
-                                {log.category === 'downtime' 
-                                  ? (log.case_status || 'open')
-                                  : (log.workorder_status || 'open')}
+                                  {log.workorder_status || 'open'}
                               </button>
-                              
-                              {activeStatusId === log.id && (
-                                <div className="absolute z-10 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-                                  <div className="relative w-32 h-32">
-                                    {STATUS_OPTIONS.map((option, index) => {
-                                      const angle = (index * 360) / STATUS_OPTIONS.length;
-                                      const isActive = (log.category === 'downtime' 
-                                        ? (log.case_status || 'open')
-                                        : (log.workorder_status || 'open')) === option.value;
-                                      
-                                      return (
-                                        <button
-                                          key={option.value}
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleStatusChange(
-                                              log.id,
-                                              option.value,
-                                              log.category === 'downtime' ? 'case_status' : 'workorder_status'
-                                            );
-                                          }}
-                                          className={`
-                                            absolute w-8 h-8 rounded-full 
-                                            transform -translate-x-1/2 -translate-y-1/2
-                                            transition-all duration-300 ease-in-out
-                                            ${option.color} hover:scale-110
-                                            flex items-center justify-center
-                                            text-white text-xs font-medium
-                                            shadow-lg hover:shadow-xl
-                                            ${isActive ? 'scale-110 ring-2 ring-white' : 'opacity-80'}
-                                            ${activeStatusId === log.id ? 'animate-in' : 'animate-out'}
-                                          `}
-                                          style={{
-                                            left: `${Math.cos((angle - 90) * (Math.PI / 180)) * 48 + 64}px`,
-                                            top: `${Math.sin((angle - 90) * (Math.PI / 180)) * 48 + 64}px`,
-                                            animation: `${activeStatusId === log.id ? 'fadeIn' : 'fadeOut'} 0.3s ease-in-out`,
-                                            animationDelay: `${index * 0.1}s`
-                                          }}
-                                        >
-                                          {option.label.split(' ')[0]}
-                                        </button>
-                                      );
-                                    })}
+                                {activeStatusId === log.id && (
+                                  <div className="absolute z-10 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+                                    <div className="relative w-32 h-32">
+                                      {STATUS_OPTIONS.map((option, index) => {
+                                        const angle = (index * 360) / STATUS_OPTIONS.length;
+                                        const isActive = (log.workorder_status || 'open') === option.value;
+                                        
+                                        return (
+                              <button
+                                            key={option.value}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleStatusChange(
+                                                log.id,
+                                                option.value,
+                                                'workorder_status'
+                                              );
+                                            }}
+                                            className={
+                                              `absolute w-8 h-8 rounded-full \
+                                              transform -translate-x-1/2 -translate-y-1/2\n                                              transition-all duration-300 ease-in-out\n                                              ${option.color} hover:scale-110\n                                              flex items-center justify-center\n                                              text-white text-xs font-medium\n                                              shadow-lg hover:shadow-xl\n                                              ${isActive ? 'scale-110 ring-2 ring-white' : 'opacity-80'}\n                                              ${activeStatusId === log.id ? 'animate-in' : 'animate-out'}\n                                            `
+                                            }
+                                            style={{
+                                              left: `${Math.cos((angle - 90) * (Math.PI / 180)) * 48 + 64}px`,
+                                              top: `${Math.sin((angle - 90) * (Math.PI / 180)) * 48 + 64}px`,
+                                              animation: `${activeStatusId === log.id ? 'fadeIn' : 'fadeOut'} 0.3s ease-in-out`,
+                                              animationDelay: `${index * 0.1}s`
+                                            }}
+                                          >
+                                            {option.label.split(' ')[0]}
+                              </button>
+                                        );
+                                      })}
+                            </div>
+                          </div>
+                                )}
+                      </div>
+                              {log.workorder_number && (
+                                <span className="text-xs text-gray-400 font-mono bg-gray-700/30 px-2 py-0.5 rounded">
+                                  WO #{log.workorder_number}
+                                </span>
+                              )}
+                              {log.workorder_title && (
+                                <span className="text-xs text-indigo-300 bg-indigo-900/30 px-2 py-0.5 rounded font-medium">
+                                  {log.workorder_title}
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-1">
+                              <p className={`text-sm text-white ${expandedLogId === log.id ? 'whitespace-pre-wrap break-words' : 'truncate'}`}>{log.description}</p>
+                              {log.attachments && (log.attachments as AttachmentWithUrl[]).length > 0 && (
+                                <div className="mt-2 flex flex-col gap-1">
+                                  <div className="flex items-center gap-2 text-gray-400 text-xs">
+                                    <Paperclip className="h-4 w-4" />
+                                    <span>Attachments:</span>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    {(log.attachments as AttachmentWithUrl[]).map((attachment, idx) => (
+                                      <a
+                                        key={idx}
+                                        href={attachment.url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-xs text-indigo-400 hover:text-indigo-300 underline"
+                                      >
+                                        {attachment.file_name}
+                                      </a>
+                                    ))}
+                                  </div>
+                      </div>
+                    )}
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="flex items-center flex-wrap gap-2">
+                              {/* Status badges for downtime */}
+                              {(log.category === 'downtime') && (
+                                <div className="relative status-menu">
+                                  <button
+                                    onClick={(e) => handleStatusClick(e, log.id)}
+                                    className={`px-2 py-0.5 rounded-full text-xs font-medium ${getStatusStyle(log.case_status || 'open')}`}
+                                  >
+                                    {log.case_status || 'open'}
+                                  </button>
+                                  {activeStatusId === log.id && (
+                                    <div className="absolute z-10 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+                                      <div className="relative w-32 h-32">
+                                        {STATUS_OPTIONS.map((option, index) => {
+                                          const angle = (index * 360) / STATUS_OPTIONS.length;
+                                          const isActive = (log.case_status || 'open') === option.value;
+                                          
+                                          return (
+                                            <button
+                                              key={option.value}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleStatusChange(
+                                                  log.id,
+                                                  option.value,
+                                                  'case_status'
+                                                );
+                                              }}
+                                              className={
+                                                `absolute w-8 h-8 rounded-full \
+                                                transform -translate-x-1/2 -translate-y-1/2\n                                                transition-all duration-300 ease-in-out\n                                                ${option.color} hover:scale-110\n                                                flex items-center justify-center\n                                                text-white text-xs font-medium\n                                                shadow-lg hover:shadow-xl\n                                                ${isActive ? 'scale-110 ring-2 ring-white' : 'opacity-80'}\n                                                ${activeStatusId === log.id ? 'animate-in' : 'animate-out'}\n                                              `
+                                              }
+                                              style={{
+                                                left: `${Math.cos((angle - 90) * (Math.PI / 180)) * 48 + 64}px`,
+                                                top: `${Math.sin((angle - 90) * (Math.PI / 180)) * 48 + 64}px`,
+                                                animation: `${activeStatusId === log.id ? 'fadeIn' : 'fadeOut'} 0.3s ease-in-out`,
+                                                animationDelay: `${index * 0.1}s`
+                                              }}
+                                            >
+                                              {option.label.split(' ')[0]}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                  </div>
+                )}
+                                </div>
+                              )}
+                              {/* Case/Workorder numbers */}
+                              {log.case_number && (log.category as string) !== 'data-sc' && (
+                                <span className="text-xs text-gray-400 font-mono bg-gray-700/30 px-2 py-0.5 rounded">
+                                  Case #{log.case_number}
+                                </span>
+                              )}
+                              {log.workorder_number && (log.category as string) !== 'data-sc' && (
+                                <span className="text-xs text-gray-400 font-mono bg-gray-700/30 px-2 py-0.5 rounded">
+                                  WO #{log.workorder_number}
+                                </span>
+                              )}
+                              {/* Machine parameters for data collection */}
+                              {((log.category as string) === 'data-mc' || (log.category as string) === 'data-sc') && (
+                                <div className="bg-gray-800/60 rounded-lg p-3 mt-2 w-fit min-w-[320px]">
+                                  {(log.category as string) === 'data-mc' && (
+                                    <>
+                                      <div className="mb-2">
+                                        <h5 className="text-xs font-bold text-indigo-300 mb-1">Main Coil Tuning Data</h5>
+                                        <div className="flex flex-wrap gap-4 text-xs text-gray-200">
+                                          <span>Main coil setpoint: <b>{log.mc_setpoint ?? '—'}</b> A</span>
+                                          <span>Yoke Temp: <b>{log.yoke_temperature ?? '—'}</b> °C</span>
+                                          <span>Filament Current: <b>{log.filament_current ?? '—'}</b> A</span>
+                                          <span>Arc Current: <b>{log.arc_current ?? '—'}</b> mA</span>
+                  </div>
+                                      </div>
+                    <div>
+                                        <h5 className="text-xs font-bold text-indigo-300 mb-1">Beam Data</h5>
+                                        <div className="flex flex-wrap gap-4 text-xs text-gray-200">
+                                          <span>PIE X width: <b>{log.p1e_x_width ?? '—'}</b> mm</span>
+                                          <span>PIE Y width: <b>{log.p1e_y_width ?? '—'}</b> mm</span>
+                                          <span>P2E X width: <b>{log.p2e_x_width ?? '—'}</b> mm</span>
+                                          <span>P2E Y width: <b>{log.p2e_y_width ?? '—'}</b> mm</span>
+                                        </div>
+                                      </div>
+                                    </>
+                                  )}
+                                  {(log.category as string) === 'data-sc' && (
+                                    <>
+                                      <div className="mb-2">
+                                        <h5 className="text-xs font-bold text-indigo-300 mb-1">Removed Source Data</h5>
+                                        <div className="flex flex-wrap gap-4 text-xs text-gray-200">
+                                          <span>Source #: <b>{log.removed_source_number ?? '—'}</b></span>
+                                          <span>Filament Current: <b>{log.removed_filament_current ?? '—'}</b> A</span>
+                                          <span>Arc Current: <b>{log.removed_arc_current ?? '—'}</b> mA</span>
+                                          <span>Filament Counter: <b>{log.removed_filament_counter ?? '—'}</b></span>
+                                        </div>
+                                      </div>
+                                      <div className="mb-2">
+                                        <h5 className="text-xs font-bold text-indigo-300 mb-1">Inserted Source Data</h5>
+                                        <div className="flex flex-wrap gap-4 text-xs text-gray-200">
+                                          <span>Source #: <b>{log.inserted_source_number ?? '—'}</b></span>
+                                          <span>Filament Current: <b>{log.inserted_filament_current ?? '—'}</b> A</span>
+                                          <span>Arc Current: <b>{log.inserted_arc_current ?? '—'}</b> mA</span>
+                                        </div>
+                                      </div>
+                                      <div className="mb-2 flex flex-wrap items-center gap-6">
+                                        <div>
+                                          <h5 className="text-xs font-bold text-indigo-300 mb-1">Filament Hours</h5>
+                                            <span className="text-xs text-gray-200">
+                                              {typeof log.filament_hours === 'number'
+                                                ? log.filament_hours.toFixed(2)
+                                                : (typeof log.removed_filament_counter === 'number'
+                                                  ? (() => {
+                                                      const prev = getPreviousRemovedFilamentCounter(log, shiftGroup.logs);
+                                                      if (typeof prev === 'number' && typeof log.removed_filament_counter === 'number') {
+                                                        return (log.removed_filament_counter - prev).toFixed(2);
+                                                      }
+                                                      return '—';
+                                                    })()
+                                                  : '—')}
+                                            </span>
+                                        </div>
+                                        <div>
+                                          <h5 className="text-xs font-bold text-indigo-300 mb-1">Svmx / Pridex</h5>
+                                          <div className="flex flex-wrap gap-4 text-xs text-gray-200">
+                                            {log.workorder_number && <span>WO #: <b>{log.workorder_number}</b></span>}
+                                            {log.case_number && <span>Case #: <b>{log.case_number}</b></span>}
+                                          </div>
+                                        </div>
+                                        {log.engineers && log.engineers.length > 0 && (
+                                          <div>
+                                            <h5 className="text-xs font-bold text-indigo-300 mb-1">Engineers</h5>
+                                            <span className="text-xs text-gray-200">
+                                              {log.engineers.map(id => engineerMap[id] || id).slice(0,2).join(', ')}
+                                            </span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            {/* Description and Details */}
+                            <div className="flex-1 min-w-0">
+                              {/* Description */}
+                              <p className={`text-sm text-white ${expandedLogId === log.id ? 'whitespace-pre-wrap break-words' : 'truncate'}`}>{log.description}</p>
+                              {/* If this is a shift start log and has a shift_id, show clickable link */}
+                              {log.category === 'shift' && log.description && log.description.toLowerCase().includes('shift started') && log.shift_id && (
+                                <a
+                                  href={`https://goiba.lightning.force.com/lightning/r/T_Shirt__c/${log.shift_id}/view`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-xs text-blue-400 underline hover:text-blue-300 mt-1 inline-block"
+                                  title="Open Shift Report in Salesforce"
+                                >
+                                  View Shift Report in Salesforce
+                                </a>
+                              )}
+                              {/* Downtime Information */}
+                              {log.category === 'downtime' && renderDowntimeInfo(log)}
+                              {log.attachments && (log.attachments as AttachmentWithUrl[]).length > 0 && (
+                                <div className="mt-2 flex flex-col gap-1">
+                                  <div className="flex items-center gap-2 text-gray-400 text-xs">
+                                    <Paperclip className="h-4 w-4" />
+                                    <span>Attachments:</span>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    {(log.attachments as AttachmentWithUrl[]).map((attachment, idx) => (
+                                      <a
+                                        key={idx}
+                                        href={attachment.url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-xs text-indigo-400 hover:text-indigo-300 underline"
+                                      >
+                                        {attachment.file_name}
+                                      </a>
+                                    ))}
                                   </div>
                                 </div>
                               )}
                             </div>
-                          )}
-                          
-                          {/* Case/Workorder numbers */}
-                          {log.case_number && (log.category as string) !== 'data-sc' && (
-                            <span className="text-xs text-gray-400 font-mono bg-gray-700/30 px-2 py-0.5 rounded">
-                              Case #{log.case_number}
-                            </span>
-                          )}
-                          {log.workorder_number && (log.category as string) !== 'data-sc' && (
-                            <span className="text-xs text-gray-400 font-mono bg-gray-700/30 px-2 py-0.5 rounded">
-                              WO #{log.workorder_number}
-                            </span>
-                          )}
-                          
-                          {/* Machine parameters for data collection */}
-                          {((log.category as string) === 'data-mc' || (log.category as string) === 'data-sc') && (
-                            <div className="bg-gray-800/60 rounded-lg p-3 mt-2 w-fit min-w-[320px]">
-                              {(log.category as string) === 'data-mc' && (
-                                <>
-                                  <div className="mb-2">
-                                    <h5 className="text-xs font-bold text-indigo-300 mb-1">Main Coil Tuning Data</h5>
-                                    <div className="flex flex-wrap gap-4 text-xs text-gray-200">
-                                      <span>Main coil setpoint: <b>{log.mc_setpoint ?? '—'}</b> A</span>
-                                      <span>Yoke Temp: <b>{log.yoke_temperature ?? '—'}</b> °C</span>
-                                      <span>Filament Current: <b>{log.filament_current ?? '—'}</b> A</span>
-                                      <span>Arc Current: <b>{log.arc_current ?? '—'}</b> mA</span>
-                                    </div>
-                                  </div>
-                  <div>
-                                    <h5 className="text-xs font-bold text-indigo-300 mb-1">Beam Data</h5>
-                                    <div className="flex flex-wrap gap-4 text-xs text-gray-200">
-                                      <span>PIE X width: <b>{log.p1e_x_width ?? '—'}</b> mm</span>
-                                      <span>PIE Y width: <b>{log.p1e_y_width ?? '—'}</b> mm</span>
-                                      <span>P2E X width: <b>{log.p2e_x_width ?? '—'}</b> mm</span>
-                                      <span>P2E Y width: <b>{log.p2e_y_width ?? '—'}</b> mm</span>
-                                    </div>
-                                  </div>
-                                </>
-                              )}
-                              {(log.category as string) === 'data-sc' && (
-                                <>
-                                  <div className="mb-2">
-                                    <h5 className="text-xs font-bold text-indigo-300 mb-1">Removed Source Data</h5>
-                                    <div className="flex flex-wrap gap-4 text-xs text-gray-200">
-                                      <span>Source #: <b>{log.removed_source_number ?? '—'}</b></span>
-                                      <span>Filament Current: <b>{log.removed_filament_current ?? '—'}</b> A</span>
-                                      <span>Arc Current: <b>{log.removed_arc_current ?? '—'}</b> mA</span>
-                                      <span>Filament Counter: <b>{log.removed_filament_counter ?? '—'}</b></span>
-                                    </div>
-                                  </div>
-                                  <div className="mb-2">
-                                    <h5 className="text-xs font-bold text-indigo-300 mb-1">Inserted Source Data</h5>
-                                    <div className="flex flex-wrap gap-4 text-xs text-gray-200">
-                                      <span>Source #: <b>{log.inserted_source_number ?? '—'}</b></span>
-                                      <span>Filament Current: <b>{log.inserted_filament_current ?? '—'}</b> A</span>
-                                      <span>Arc Current: <b>{log.inserted_arc_current ?? '—'}</b> mA</span>
-                                      <span>Filament Counter: <b>{log.inserted_filament_counter ?? '—'}</b></span>
-                                    </div>
-                                  </div>
-                                  <div className="mb-2 flex flex-wrap items-center gap-6">
-                                    <div>
-                                      <h5 className="text-xs font-bold text-indigo-300 mb-1">Filament Hours</h5>
-                                      <span className="text-xs text-gray-200">
-                                        {typeof log.inserted_filament_counter === 'number' && typeof log.removed_filament_counter === 'number'
-                                          ? (log.inserted_filament_counter - log.removed_filament_counter).toFixed(2)
-                                          : '—'}
-                                      </span>
-                                    </div>
-                                    <div>
-                                      <h5 className="text-xs font-bold text-indigo-300 mb-1">Svmx / Pridex</h5>
-                                      <div className="flex flex-wrap gap-4 text-xs text-gray-200">
-                                        {log.workorder_number && <span>WO #: <b>{log.workorder_number}</b></span>}
-                                        {log.case_number && <span>Case #: <b>{log.case_number}</b></span>}
-                                      </div>
-                                    </div>
-                                    {log.engineers && log.engineers.length > 0 && (
-                                      <div>
-                                        <h5 className="text-xs font-bold text-indigo-300 mb-1">Engineers</h5>
-                                        <span className="text-xs text-gray-200">
-                                          {log.engineers.map(id => engineerMap[id] || id).slice(0,2).join(', ')}
-                                        </span>
-                                      </div>
-                                    )}
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Description and Details */}
-                        <div className="flex-1 min-w-0">
-                          {/* Description */}
-                          <p className={`text-sm text-white ${expandedLogId === log.id ? 'whitespace-pre-wrap break-words' : 'truncate'}`}>
-                            {log.description}
-                          </p>
-
-                          {/* Downtime Information */}
-                          {log.category === 'downtime' && renderDowntimeInfo(log)}
-                        </div>
-
-                        {/* Expand indicator */}
-                        {shouldShowExpand(log) && !expandedLogId && (
-                          <span className="text-xs text-gray-500 mt-1">Click to expand</span>
+                          </>
                         )}
-                        
-                        {/* Attachments in expanded view */}
-                        {expandedLogId === log.id && log.attachments && log.attachments.length > 0 && (
-                      <div className="mt-2 space-y-1">
-                        {log.attachments.map((attachment) => (
-                              <div key={attachment.id} className="flex items-center gap-2 text-sm bg-gray-700/30 p-2 rounded">
-                            <Paperclip className="h-4 w-4 text-gray-400" />
-                                <span className="text-gray-300 truncate">{attachment.file_name}</span>
-                                <span className="text-gray-500 shrink-0">({formatFileSize(attachment.file_size)})</span>
-                                <div className="flex items-center gap-1 ml-auto">
-                              <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleView(attachment.file_path);
-                                    }}
-                                    className="p-1 text-gray-400 hover:text-white transition-colors hover:bg-white/10 rounded"
-                                title="View"
-                              >
-                                <ExternalLink className="h-4 w-4" />
-                              </button>
-                              <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleDownload(attachment.file_path, attachment.file_name);
-                                    }}
-                                    className="p-1 text-gray-400 hover:text-white transition-colors hover:bg-white/10 rounded"
-                                title="Download"
-                              >
-                                <Download className="h-4 w-4" />
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
                       </>
-                )}
+                    )}
                   </div>
 
                   {/* Actions */}

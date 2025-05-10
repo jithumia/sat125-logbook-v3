@@ -21,6 +21,7 @@ interface ShiftSummary {
   endTime: string | null;
   engineers: string[];
   svmxNumber: string;
+  shiftId?: string;
   mainCoilTuning: LogEntry[];
   sourceChange: LogEntry[];
   errors: LogEntry[];
@@ -38,7 +39,10 @@ const ShiftReport: React.FC<ShiftReportProps> = ({ isOpen, onClose, shifts }) =>
 
   // Get the last closed shift
   const getLastClosedShift = () => {
-    return shifts.find(shift => shift.endTime !== null);
+    // Sort shifts by endTime in descending order and find the first closed shift
+    return shifts
+      .filter(shift => shift.endTime !== null)
+      .sort((a, b) => new Date(b.endTime!).getTime() - new Date(a.endTime!).getTime())[0];
   };
 
   // Process shift data into a summary
@@ -52,6 +56,7 @@ const ShiftReport: React.FC<ShiftReportProps> = ({ isOpen, onClose, shifts }) =>
     // Extract engineers and SVMX number from shift start entry
     let engineers: string[] = [];
     let svmxNumber = '';
+    let shiftId = '';
 
     if (shiftStartEntry) {
       const description = shiftStartEntry.description;
@@ -64,6 +69,10 @@ const ShiftReport: React.FC<ShiftReportProps> = ({ isOpen, onClose, shifts }) =>
       const svmxMatch = description.match(/SF#:\s*([A-Za-z0-9-]+)/i);
       if (svmxMatch) {
         svmxNumber = svmxMatch[1];
+      }
+      // Extract shiftId
+      if (shiftStartEntry.shift_id) {
+        shiftId = shiftStartEntry.shift_id;
       }
     }
 
@@ -87,6 +96,7 @@ const ShiftReport: React.FC<ShiftReportProps> = ({ isOpen, onClose, shifts }) =>
       endTime: shift.endTime,
       engineers,
       svmxNumber,
+      shiftId,
       mainCoilTuning,
       sourceChange,
       errors,
@@ -97,6 +107,26 @@ const ShiftReport: React.FC<ShiftReportProps> = ({ isOpen, onClose, shifts }) =>
     };
   };
 
+  // Helper for downtime total
+  function getTotalDowntime(downtime: LogEntry[]): number {
+    return downtime.reduce((sum, dt) =>
+      typeof dt.dt_duration === 'number' && dt.dt_end_time ? sum + dt.dt_duration : sum, 0);
+  }
+
+  // Helper for workorder mode
+  function getWorkorderMode(wo: LogEntry): string {
+    if ((wo as any).workorder_category) {
+      return (wo as any).workorder_category === 'manual' ? 'Manual' : 'PM';
+    }
+    return '';
+  }
+
+  // Helper for rendering attachments as text links (for email)
+  function renderAttachmentLinks(log: LogEntry): string {
+    if (!log.attachments || log.attachments.length === 0) return '';
+    return log.attachments.map(a => a.file_name).join(', ');
+  }
+
   const pad = (str: string, len: number) => (str || '').toString().padEnd(len, ' ');
 
   const formatShiftSummary = (summary: ShiftSummary): string => {
@@ -106,7 +136,12 @@ const ShiftReport: React.FC<ShiftReportProps> = ({ isOpen, onClose, shifts }) =>
     // Greeting and intro
     sections.push('Dear Team,');
     sections.push('');
-    sections.push(`Please find the following report summarizing the ${summary.shiftType} Shift activities and events for SVMX No: ${summary.svmxNumber} on ${dateStr}:`);
+    // SVMX No as clickable URL
+    if (summary.svmxNumber && summary.shiftId) {
+      sections.push(`Please find the following report summarizing the ${summary.shiftType} Shift activities and events for SVMX No: ${summary.svmxNumber} (https://goiba.lightning.force.com/lightning/r/T_Shirt__c/${summary.shiftId}/view) on ${dateStr}:`);
+    } else {
+      sections.push(`Please find the following report summarizing the ${summary.shiftType} Shift activities and events for SVMX No: ${summary.svmxNumber} on ${dateStr}:`);
+    }
     sections.push('');
     if (summary.engineers.length > 0) {
       sections.push(`Engineers: ${summary.engineers.join(', ')}`);
@@ -118,7 +153,11 @@ const ShiftReport: React.FC<ShiftReportProps> = ({ isOpen, onClose, shifts }) =>
       sections.push('');
       sections.push('GENERAL:');
       summary.general.forEach(note => {
-        sections.push(note.description);
+        let line = note.description;
+        if (note.attachments && note.attachments.length > 0) {
+          line += ' | Attachments: ' + renderAttachmentLinks(note);
+        }
+        sections.push(line);
       });
     }
 
@@ -128,9 +167,11 @@ const ShiftReport: React.FC<ShiftReportProps> = ({ isOpen, onClose, shifts }) =>
       sections.push('MAIN COIL TUNING ENTRIES:');
       sections.push(`Sessions: ${summary.mainCoilTuning.length}`);
       summary.mainCoilTuning.forEach(entry => {
-        sections.push(
-          `MC Current setpoint: ${entry.mc_setpoint} A | Filament Current: ${entry.filament_current} A | Arc Current: ${entry.arc_current} mA | Yoke Temperature: ${entry.yoke_temperature} c | P1E Width: X: ${entry.p1e_x_width}mm,  Y: ${entry.p1e_y_width}mm | P2E Width: X: ${entry.p2e_x_width}mm,  Y: ${entry.p2e_y_width}mm`
-        );
+        let line = `MC Current setpoint: ${entry.mc_setpoint} A | Filament Current: ${entry.filament_current} A | Arc Current: ${entry.arc_current} mA | Yoke Temperature: ${entry.yoke_temperature} c | P1E Width: X: ${entry.p1e_x_width}mm,  Y: ${entry.p1e_y_width}mm | P2E Width: X: ${entry.p2e_x_width}mm,  Y: ${entry.p2e_y_width}mm`;
+        if (entry.attachments && entry.attachments.length > 0) {
+          line += ' | Attachments: ' + renderAttachmentLinks(entry);
+        }
+        sections.push(line);
       });
     }
 
@@ -139,7 +180,11 @@ const ShiftReport: React.FC<ShiftReportProps> = ({ isOpen, onClose, shifts }) =>
       sections.push('');
       sections.push('ERRORS:');
       summary.errors.forEach(error => {
-        sections.push(error.description);
+        let line = error.description;
+        if (error.attachments && error.attachments.length > 0) {
+          line += ' | Attachments: ' + renderAttachmentLinks(error);
+        }
+        sections.push(line);
       });
     }
 
@@ -164,9 +209,11 @@ const ShiftReport: React.FC<ShiftReportProps> = ({ isOpen, onClose, shifts }) =>
     } else {
       sections.push(`Source changes: ${summary.sourceChange.length}`);
       summary.sourceChange.forEach(sc => {
-        sections.push(
-          `Removed Source: #${sc.removed_source_number} Filament current ${sc.removed_filament_current}A Arc current ${sc.removed_arc_current}mA, Inserted Source : #${sc.inserted_source_number} Filament current ${sc.inserted_filament_current}A Arc current ${sc.inserted_arc_current}mA`
-        );
+        let line = `Removed Source: #${sc.removed_source_number} Filament current ${sc.removed_filament_current}A Arc current ${sc.removed_arc_current}mA, Inserted Source : #${sc.inserted_source_number} Filament current ${sc.inserted_filament_current}A Arc current ${sc.inserted_arc_current}mA`;
+        if (sc.attachments && sc.attachments.length > 0) {
+          line += ' | Attachments: ' + renderAttachmentLinks(sc);
+        }
+        sections.push(line);
       });
     }
 
@@ -177,21 +224,37 @@ const ShiftReport: React.FC<ShiftReportProps> = ({ isOpen, onClose, shifts }) =>
       sections.push(`${pad('Case', 10)}${pad('Status', 14)}${pad('Duration', 10)}Description`);
       summary.downtime.forEach(dt => {
         const duration = dt.dt_duration ? `${Math.floor(dt.dt_duration / 60)}h ${dt.dt_duration % 60}m` : 'Ongoing';
-        sections.push(
-          `${pad(dt.case_number || '', 10)}${pad((dt.case_status || '').toUpperCase(), 14)}${pad(duration, 10)}${dt.description}`
-        );
+        let line = `${pad(dt.case_number || '', 10)}${pad((dt.case_status || '').toUpperCase(), 14)}${pad(duration, 10)}${dt.description}`;
+        if (dt.attachments && dt.attachments.length > 0) {
+          line += ' | Attachments: ' + renderAttachmentLinks(dt);
+        }
+        sections.push(line);
       });
+      // Add total downtime
+      const totalMins = getTotalDowntime(summary.downtime);
+      if (totalMins > 0) {
+        const hours = Math.floor(totalMins / 60);
+        const mins = totalMins % 60;
+        sections.push(`Total Downtime is ${hours > 0 ? hours + ' hours ' : ''}${mins} minutes`);
+      }
     }
 
     // Workorder
     if (summary.workorders.length > 0) {
       sections.push('');
       sections.push('WORKORDER:');
-      sections.push(`${pad('WO Number', 10)}${pad('Status', 14)}Description`);
+      sections.push(`${pad('WO Number', 10)}${pad('Status', 14)}Title / Mode / Description`);
       summary.workorders.forEach(wo => {
-        sections.push(
-          `${pad(wo.workorder_number || '', 10)}${pad((wo.workorder_status || '').toUpperCase(), 14)}${wo.description}`
-        );
+        let line = `${pad(wo.workorder_number || '', 10)}${pad((wo.workorder_status || '').toUpperCase(), 14)}`;
+        // Add title and mode
+        if (wo.workorder_title) line += `${wo.workorder_title} | `;
+        const mode = getWorkorderMode(wo);
+        if (mode) line += `${mode} | `;
+        line += wo.description;
+        if (wo.attachments && wo.attachments.length > 0) {
+          line += ' | Attachments: ' + renderAttachmentLinks(wo);
+        }
+        sections.push(line);
       });
     }
 
@@ -371,9 +434,240 @@ const ShiftReport: React.FC<ShiftReportProps> = ({ isOpen, onClose, shifts }) =>
                 </div>
 
                 <div className="bg-gray-800 rounded-lg p-4 max-h-[60vh] overflow-y-auto">
-                  <pre className="whitespace-pre-wrap font-mono text-sm text-gray-300">
-                    {formatShiftSummary(summary)}
-                  </pre>
+                  {/* Custom preview rendering for clickable SVMX No and attachments */}
+                  <div className="whitespace-pre-wrap font-mono text-sm text-gray-300">
+                    {/* SVMX No clickable */}
+                    {summary.svmxNumber && summary.shiftId ? (
+                      <div className="mb-2">
+                        <span>Please find the following report summarizing the {summary.shiftType} Shift activities and events for </span>
+                        <a
+                          href={`https://goiba.lightning.force.com/lightning/r/T_Shirt__c/${summary.shiftId}/view`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-400 underline hover:text-blue-300"
+                        >
+                          SVMX No: {summary.svmxNumber}
+                        </a>
+                        <span> on {format(new Date(summary.startTime), 'MMMM d, yyyy')}:</span>
+                      </div>
+                    ) : (
+                      <div className="mb-2">
+                        Please find the following report summarizing the {summary.shiftType} Shift activities and events for SVMX No: {summary.svmxNumber} on {format(new Date(summary.startTime), 'MMMM d, yyyy')}:
+                      </div>
+                    )}
+                    {/* Engineers */}
+                    {summary.engineers.length > 0 && (
+                      <div className="mb-2">Engineers: {summary.engineers.join(', ')}</div>
+                    )}
+                    {/* General */}
+                    {summary.general.length > 0 && (
+                      <div className="mb-2">
+                        <div className="font-bold">GENERAL:</div>
+                        {summary.general.map((note, idx) => (
+                          <div key={idx}>
+                            {note.description}
+                            {note.attachments && note.attachments.length > 0 && (
+                              <span className="ml-2">|
+                                Attachments: {note.attachments.map((a, i) => (
+                                  <span
+                                    key={i}
+                                    className="text-gray-400 ml-1"
+                                  >
+                                    {a.file_name}
+                                  </span>
+                                ))}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* Main Coil Tuning */}
+                    {summary.mainCoilTuning.length > 0 && (
+                      <div className="mb-2">
+                        <div className="font-bold">MAIN COIL TUNING ENTRIES:</div>
+                        <div>Sessions: {summary.mainCoilTuning.length}</div>
+                        {summary.mainCoilTuning.map((entry, idx) => (
+                          <div key={idx}>
+                            MC Current setpoint: {entry.mc_setpoint} A | Filament Current: {entry.filament_current} A | Arc Current: {entry.arc_current} mA | Yoke Temperature: {entry.yoke_temperature} c | P1E Width: X: {entry.p1e_x_width}mm,  Y: {entry.p1e_y_width}mm | P2E Width: X: {entry.p2e_x_width}mm,  Y: {entry.p2e_y_width}mm
+                            {entry.attachments && entry.attachments.length > 0 && (
+                              <span className="ml-2">|
+                                Attachments: {entry.attachments.map((a, i) => (
+                                  <span
+                                    key={i}
+                                    className="text-gray-400 ml-1"
+                                  >
+                                    {a.file_name}
+                                  </span>
+                                ))}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* Errors */}
+                    {summary.errors.length > 0 && (
+                      <div className="mb-2">
+                        <div className="font-bold">ERRORS:</div>
+                        {summary.errors.map((error, idx) => (
+                          <div key={idx}>
+                            {error.description}
+                            {error.attachments && error.attachments.length > 0 && (
+                              <span className="ml-2">|
+                                Attachments: {error.attachments.map((a, i) => (
+                                  <span
+                                    key={i}
+                                    className="text-gray-400 ml-1"
+                                  >
+                                    {a.file_name}
+                                  </span>
+                                ))}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* Source Changes */}
+                    <div className="mb-2">
+                      <div className="font-bold">SOURCE CHANGES:</div>
+                      {summary.sourceChange.length === 0 ? (
+                        <div>no source change happened in this shift</div>
+                      ) : (
+                        <>
+                          <div>
+                            {summary.sourceChange.length > 0 && summary.mainCoilTuning.length > 0
+                              ? `Current installed source: #${summary.sourceChange[summary.sourceChange.length - 1].inserted_source_number} | Filament current: ${summary.mainCoilTuning[summary.mainCoilTuning.length - 1].filament_current} A | Arc current: ${summary.mainCoilTuning[summary.mainCoilTuning.length - 1].arc_current} mA`
+                              : summary.sourceChange.length > 0
+                              ? `Current installed source: #${summary.sourceChange[summary.sourceChange.length - 1].inserted_source_number}`
+                              : summary.mainCoilTuning.length > 0
+                              ? `Current installed source: (unknown) | Filament current: ${summary.mainCoilTuning[summary.mainCoilTuning.length - 1].filament_current} A | Arc current: ${summary.mainCoilTuning[summary.mainCoilTuning.length - 1].arc_current} mA`
+                              : `Current installed source: (unknown)`}
+                          </div>
+                          <div>Source changes: {summary.sourceChange.length}</div>
+                          {summary.sourceChange.map((sc, idx) => (
+                            <div key={idx}>
+                              Removed Source: #{sc.removed_source_number} Filament current {sc.removed_filament_current}A Arc current {sc.removed_arc_current}mA, Inserted Source : #{sc.inserted_source_number} Filament current {sc.inserted_filament_current}A Arc current {sc.inserted_arc_current}mA
+                              {sc.attachments && sc.attachments.length > 0 && (
+                                <span className="ml-2">|
+                                  Attachments: {sc.attachments.map((a, i) => (
+                                    <span
+                                      key={i}
+                                      className="text-gray-400 ml-1"
+                                    >
+                                      {a.file_name}
+                                    </span>
+                                  ))}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                    {/* Downtime */}
+                    {summary.downtime.length > 0 && (
+                      <div className="mb-2">
+                        <div className="font-bold">DOWNTIME:</div>
+                        <div>{pad('Case', 10)}{pad('Status', 14)}{pad('Duration', 10)}Description</div>
+                        {summary.downtime.map((dt, idx) => {
+                          const duration = dt.dt_duration ? `${Math.floor(dt.dt_duration / 60)}h ${dt.dt_duration % 60}m` : 'Ongoing';
+                          return (
+                            <div key={idx}>
+                              {pad(dt.case_number || '', 10)}{pad((dt.case_status || '').toUpperCase(), 14)}{pad(duration, 10)}{dt.description}
+                              {dt.attachments && dt.attachments.length > 0 && (
+                                <span className="ml-2">|
+                                  Attachments: {dt.attachments.map((a, i) => (
+                                    <span
+                                      key={i}
+                                      className="text-gray-400 ml-1"
+                                    >
+                                      {a.file_name}
+                                    </span>
+                                  ))}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {/* Total downtime */}
+                        {(() => {
+                          const totalMins = getTotalDowntime(summary.downtime);
+                          if (totalMins > 0) {
+                            const hours = Math.floor(totalMins / 60);
+                            const mins = totalMins % 60;
+                            return <div className="font-bold mt-1">Total Downtime is {hours > 0 ? hours + ' hours ' : ''}{mins} minutes</div>;
+                          }
+                          return null;
+                        })()}
+                      </div>
+                    )}
+                    {/* Workorders */}
+                    {summary.workorders.length > 0 && (
+                      <div className="mb-2">
+                        <div className="font-bold">WORKORDER:</div>
+                        <div>{pad('WO Number', 10)}{pad('Status', 14)}Title / Mode / Description</div>
+                        {summary.workorders.map((wo, idx) => {
+                          const mode = getWorkorderMode(wo);
+                          return (
+                            <div key={idx}>
+                              {pad(wo.workorder_number || '', 10)}{pad((wo.workorder_status || '').toUpperCase(), 14)}
+                              {wo.workorder_title && <span>{wo.workorder_title} | </span>}
+                              {mode && <span>{mode} | </span>}
+                              {wo.description}
+                              {wo.attachments && wo.attachments.length > 0 && (
+                                <span className="ml-2">|
+                                  Attachments: {wo.attachments.map((a, i) => (
+                                    <span
+                                      key={i}
+                                      className="text-gray-400 ml-1"
+                                    >
+                                      {a.file_name}
+                                    </span>
+                                  ))}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {/* Notes for Next Shift */}
+                    {(summary.notesForNextShift || (() => {
+                      const shiftEndEntry = currentShift?.logs.find(log => log.category === 'shift' && log.description.toLowerCase().includes('shift ended'));
+                      if (shiftEndEntry) {
+                        const noteMatch = shiftEndEntry.description.match(/note[:=]?\s*(.*)$/i);
+                        if (noteMatch && noteMatch[1]) {
+                          return noteMatch[1].trim();
+                        }
+                      }
+                      return '';
+                    })()) && (
+                      <div className="mb-2">
+                        <div className="font-bold">NOTES FOR NEXT SHIFT:</div>
+                        {(() => {
+                          let notes = summary.notesForNextShift || '';
+                          const shiftEndEntry = currentShift?.logs.find(log => log.category === 'shift' && log.description.toLowerCase().includes('shift ended'));
+                          let filamentArcNote = '';
+                          if (shiftEndEntry) {
+                            const filamentMatch = shiftEndEntry.description.match(/filament[:=]?\s*([\d.]+)\s*a/i);
+                            const arcMatch = shiftEndEntry.description.match(/arc[:=]?\s*([\d.]+)\s*m?a/i);
+                            if (filamentMatch || arcMatch) {
+                              filamentArcNote = `Filament: ${filamentMatch ? filamentMatch[1] + 'A' : ''}${filamentMatch && arcMatch ? ', ' : ''}${arcMatch ? 'Arc: ' + arcMatch[1] + 'mA' : ''}`;
+                            }
+                            const noteMatch = shiftEndEntry.description.match(/note[:=]?\s*(.*)$/i);
+                            if (noteMatch && noteMatch[1]) {
+                              notes = noteMatch[1].trim();
+                            }
+                          }
+                          return <>{filamentArcNote && <div>{filamentArcNote}</div>}{notes && <div>{notes}</div>}</>;
+                        })()}
+                      </div>
+                    )}
+                    {/* Closing */}
+                    <div className="mt-4">Thank you,<br />{summary.shiftType} Shift Team</div>
+                  </div>
                 </div>
 
                 <div className="flex justify-end gap-4 pt-4">

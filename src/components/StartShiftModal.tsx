@@ -16,6 +16,7 @@ const StartShiftModal: React.FC<StartShiftModalProps> = ({ onClose, onSuccess })
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [shiftType, setShiftType] = useState<ShiftType>('morning');
+  const [shiftId, setShiftId] = useState('');
 
   useEffect(() => {
     fetchEngineers();
@@ -58,6 +59,11 @@ const StartShiftModal: React.FC<StartShiftModalProps> = ({ onClose, onSuccess })
 
     if (!salesforceNumber.trim()) {
       toast.error('Please enter the Salesforce shift report number');
+      return;
+    }
+
+    if (!shiftId.trim()) {
+      toast.error('Please enter the Shift ID (Salesforce Shift Report ID)');
       return;
     }
 
@@ -141,7 +147,8 @@ const StartShiftModal: React.FC<StartShiftModalProps> = ({ onClose, onSuccess })
           shift_type: shiftType,
           category: 'shift',
           description: `${shiftType} shift started by ${engineerNames} (SF#: ${salesforceNumber.trim()})`,
-          user_id: user.id
+          user_id: user.id,
+          shift_id: shiftId.trim(),
         }]);
 
       if (logError) {
@@ -154,9 +161,12 @@ const StartShiftModal: React.FC<StartShiftModalProps> = ({ onClose, onSuccess })
       }
 
       // Success! Update the UI
-      await onSuccess();
+      console.log('Shift created successfully, calling onSuccess');
+      onSuccess();
+      console.log('onSuccess called, showing toast and closing modal');
       toast.success('Shift started successfully');
       onClose();
+      console.log('onClose called, modal should close');
     } catch (error) {
       console.error('Error starting shift:', error);
       toast.error('Failed to start shift. Please try again.');
@@ -228,6 +238,20 @@ const StartShiftModal: React.FC<StartShiftModalProps> = ({ onClose, onSuccess })
               required
               className="w-full rounded-md bg-gray-700 border-gray-600 text-white shadow-sm focus:border-blue-500 focus:ring-blue-500"
               placeholder="Enter Salesforce number"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-200 mb-2">
+              Shift ID (Salesforce Shift Report ID)
+            </label>
+            <input
+              type="text"
+              value={shiftId}
+              onChange={e => setShiftId(e.target.value)}
+              placeholder="e.g. a44TX00001YB6jbYAD"
+              className="w-full rounded-lg bg-gray-700 border border-gray-600 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500"
+              required
             />
           </div>
 
