@@ -85,7 +85,7 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     
     // Trigger a refresh when editing is completed
     if (refreshAfterEditing && !isEditing.current) {
-      fetchLogs();
+    fetchLogs();
       fetchCriticalEvents();
       setRefreshAfterEditing(false);
     }
@@ -142,9 +142,186 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     setIsEditing(showDowntimeModal || editingLog !== null);
   }, [showDowntimeModal, editingLog, setIsEditing]);
 
+  // Add visibility change handler to refresh logs when tab becomes visible
+  useEffect(() => {
+    // Create a ref to track component mount state
+    const isMounted = { current: true };
+    // Add flag to prevent double refreshes
+    let isRefreshing = false;
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && isMounted.current) {
+        // Prevent multiple rapid refreshes
+        if (isRefreshing) return;
+        isRefreshing = true;
+        
+        console.log('LogTable: Tab became visible, refreshing logs quietly');
+        // Call the quiet versions of fetch functions to avoid loading states
+        fetchLogsQuietly();
+        fetchCriticalEventsQuietly();
+        
+        // Reset the refreshing flag after a delay
+        setTimeout(() => {
+          isRefreshing = false;
+        }, 1000);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    // Cleanup
+    return () => {
+      isMounted.current = false;
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  // Add quiet versions of fetch functions that don't change the loading state
+  const fetchLogsQuietly = async () => {
+    try {
+      // Same as fetchLogs but without setting loading state
+      let query = supabase
+              .from('log_entries')
+              .select(`
+                *,
+                attachments (
+                  id,
+                  file_name,
+                  file_type,
+                  file_size,
+                  file_path,
+                  created_at
+                )
+              `)
+        .order('created_at', { ascending: false });
+
+      // Apply filters based on showAllLogs
+      if (!showAllLogs && activeShift) {
+        // Use the latest 'shift started' log for the current shift type
+        const { data: shiftStartLogs } = await supabase
+          .from('log_entries')
+          .select('created_at')
+          .eq('category', 'shift')
+          .eq('shift_type', activeShift.shift_type)
+          .ilike('description', '%shift started%')
+          .order('created_at', { ascending: false })
+          .limit(1);
+        let shiftStartTime = activeShift.started_at;
+        if (shiftStartLogs && shiftStartLogs.length > 0) {
+          shiftStartTime = shiftStartLogs[0].created_at;
+        }
+        query = query.gte('created_at', shiftStartTime);
+      }
+
+      // Apply other filters (same as in fetchLogs)
+      if (searchFilters.startDate) {
+        const startDate = new Date(searchFilters.startDate);
+        startDate.setHours(0, 0, 0, 0);
+        query = query.gte('created_at', startDate.toISOString());
+      }
+
+      if (searchFilters.endDate) {
+        const endDate = new Date(searchFilters.endDate);
+        endDate.setHours(23, 59, 59, 999);
+        query = query.lte('created_at', endDate.toISOString());
+      }
+
+      if (searchFilters.shiftType) {
+        query = query.eq('shift_type', searchFilters.shiftType);
+      }
+
+      const { data, error } = await query;
+
+      if (error) throw error;
+
+      if (!data) {
+        setRawLogs([]);
+        setLogs([]);
+        return;
+      }
+
+      const logsWithUrls = await addAttachmentUrlsToLogs(data);
+      
+      // Process results (same as fetchLogs)
+      // ... rest of the processing logic from fetchLogs
+      const groupedLogs: ShiftGroup[] = [];
+      let currentGroup: ShiftGroup | null = null;
+
+      // Sort data chronologically
+      const sortedData = [...logsWithUrls].sort((a, b) => 
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      );
+
+      // Group logs by shift
+      for (const log of sortedData) {
+        // Skip if category filter is active and doesn't match
+        if (searchFilters.category && 
+            log.category !== searchFilters.category && 
+            log.category !== 'shift') {
+          continue;
+        }
+
+        if (log.category === 'shift') {
+          if (log.description.includes('shift started')) {
+            // Close previous group if exists
+            if (currentGroup && !currentGroup.endTime) {
+              currentGroup.endTime = log.created_at;
+            }
+            // Start new group
+            currentGroup = {
+              shiftType: log.shift_type,
+              startTime: log.created_at,
+              endTime: null,
+              logs: [log]
+            };
+            groupedLogs.push(currentGroup);
+          } else if (log.description.includes('shift ended') && currentGroup) {
+            if (currentGroup.shiftType === log.shift_type) {
+              currentGroup.endTime = log.created_at;
+              currentGroup.logs.push(log);
+              currentGroup = null;
+            }
+          }
+        } else if (currentGroup) {
+          currentGroup.logs.push(log);
+        }
+      }
+
+      // Only reverse once here
+      const reversedGroups = groupedLogs.reverse();
+      setRawLogs(reversedGroups);
+      setLogs(reversedGroups);
+    } catch (error) {
+      console.error('Error in fetchLogsQuietly:', error);
+      // Don't show error toast to avoid UI disruption
+    }
+  };
+
+  const fetchCriticalEventsQuietly = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('log_entries')
+        .select('*')
+        .in('category', ['error', 'downtime'])
+        .order('created_at', { ascending: false })
+        .limit(5);
+
+      if (error) throw error;
+      setCriticalEvents(data || []);
+    } catch (error) {
+      console.error('Error fetching critical events quietly:', error);
+      // Don't show error toast
+    }
+  };
+
+  // Regular fetch functions with loading state
   const fetchLogs = async () => {
     try {
+      // Only show loading indicator if the tab is visible
+      if (document.visibilityState === 'visible') {
       setLoading(true);
+      }
+      
       let query = supabase
         .from('log_entries')
         .select(`

@@ -28,6 +28,14 @@ interface AccessRequest {
   created_at: string;
 }
 
+// Define the ShiftGroup interface
+interface ShiftGroup {
+  shiftType: ShiftType;
+  startTime: string;
+  endTime: string | null;
+  logs: LogEntry[];
+}
+
 // Update the styles with new animations
 const styles = `
   @keyframes fadeIn {
@@ -282,7 +290,7 @@ function App() {
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [showDashboard, setShowDashboard] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
-  const [closedShifts, setClosedShifts] = useState([]); // Array of {shiftType, startTime, endTime, logs}
+  const [closedShifts, setClosedShifts] = useState<ShiftGroup[]>([]);
   const [loadingShifts, setLoadingShifts] = useState(false);
 
   // Add array of emojis for random selection
@@ -451,8 +459,40 @@ function App() {
     checkAdminStatus();
   }, []);
 
-  const fetchActiveShift = async () => {
+  const fetchRecentLogs = async (showLoading = true) => {
     try {
+      // Only show loading indicator if explicitly requested and tab is visible
+      if (showLoading && document.visibilityState === 'visible') {
+        setLoading(true);
+      }
+      
+      const { data, error } = await supabase
+        .from('log_entries')
+        .select('*')
+        .in('category', ['error', 'downtime'])
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setRecentLogs(data || []);
+    } catch (error) {
+      console.error('Error fetching recent logs:', error);
+      if (showLoading) {
+        toast.error('Failed to fetch recent logs');
+      }
+    } finally {
+      if (showLoading) {
+        setLoading(false);
+      }
+    }
+  };
+
+  const fetchActiveShift = async (showLoading = true) => {
+    try {
+      // Only show loading indicator if explicitly requested and tab is visible
+      if (showLoading && document.visibilityState === 'visible') {
+        setLoading(true);
+      }
+      
       const { data: activeShifts, error } = await supabase
         .from('active_shifts')
         .select(`
@@ -476,7 +516,13 @@ function App() {
       }
     } catch (error) {
       console.error('Error fetching active shift:', error);
+      if (showLoading) {
       toast.error('Failed to fetch active shift status');
+      }
+    } finally {
+      if (showLoading) {
+        setLoading(false);
+      }
     }
   };
 
@@ -513,22 +559,6 @@ function App() {
       return;
     }
     setShowForm(true);
-  };
-
-  const fetchRecentLogs = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('log_entries')
-        .select('*')
-        .in('category', ['error', 'downtime'])
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      setRecentLogs(data || []);
-    } catch (error) {
-      console.error('Error fetching recent logs:', error);
-      toast.error('Failed to fetch recent logs');
-    }
   };
 
   const handleCriticalEventClick = async (log: LogEntry) => {
@@ -1219,18 +1249,71 @@ function App() {
     return () => clearTimeout(timeoutId);
   }, [loading]);
 
-  // Utility from LogTable
-  async function addAttachmentUrlsToLogs(logs) {
+  // Add this useEffect to handle tab visibility changes
+  useEffect(() => {
+    // Use this flag to avoid double-refreshing
+    let isRefreshing = false;
+    
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === 'visible') {
+        // Don't show any loading indicators or mangle the session state
+        if (isRefreshing) return;
+        isRefreshing = true;
+        
+        console.log('Tab is now visible, refreshing data quietly');
+        try {
+          // Check connection but don't modify the session state
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session) {
+            // Only refresh data without changing app state
+            await fetchRecentLogs(false);
+            // Set a flag to refresh everything after any edits are complete
+            if (!isEditing) {
+              reloadAllData();
+            } else {
+              setRefreshAfterEditing(true);
+            }
+          }
+        } catch (error) {
+          console.error('Error refreshing data:', error);
+        } finally {
+          // Reset the refreshing flag with a small delay to prevent rapid triggers
+          setTimeout(() => {
+            isRefreshing = false;
+          }, 1000);
+        }
+      }
+    };
+
+    // Function to handle window focus for form inputs
+    const handleWindowFocus = () => {
+      // Intentionally do nothing - let the form handle its own focus state
+    };
+
+    // Add the visibility change listener
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleWindowFocus);
+
+    // Clean up the listeners when component unmounts
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, []);
+
+  // Fix TypeScript errors for addAttachmentUrlsToLogs
+  async function addAttachmentUrlsToLogs(logs: LogEntry[]): Promise<LogEntry[]> {
     for (const log of logs) {
       if (log.attachments && log.attachments.length > 0) {
         for (const attachment of log.attachments) {
+          // Generate signed URL for each attachment
           const { data, error } = await supabase.storage
             .from('attachments')
             .createSignedUrl(attachment.file_path, 3600);
           if (!error && data?.signedUrl) {
-            attachment.url = data.signedUrl;
+            (attachment as any).url = data.signedUrl;
           } else {
-            attachment.url = '#';
+            (attachment as any).url = '#';
           }
         }
       }
@@ -1278,7 +1361,13 @@ function App() {
         }
       }
       // Only return closed shifts (with endTime)
-      setClosedShifts(groupedShifts.filter(s => s.endTime));
+      const castedShifts = groupedShifts
+        .filter(s => s.endTime)
+        .map(shift => ({
+          ...shift,
+          shiftType: shift.shiftType as ShiftType
+        }));
+      setClosedShifts(castedShifts);
     } catch (err) {
       toast.error('Failed to fetch closed shifts');
       setClosedShifts([]);

@@ -158,30 +158,34 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
   const [showWOFilters, setShowWOFilters] = useState(true);
   const [showDTFilters, setShowDTFilters] = useState(true);
 
-  const fetchDashboardData = useCallback(async () => {
+  const fetchDashboardData = useCallback(async (showLoading = true) => {
     if (!mounted.current) return;
 
     try {
-      setLoading(true);
+      // Only show loading indicator if tab is visible and loading is requested
+      if (showLoading && document.visibilityState === 'visible') {
+        setLoading(true);
+      }
       retryCountRef.current = 0;
 
-      // Fetch latest source change data
-      const sourceChangeData = await fetchWithRetry(async () => {
-        const { data, error } = await supabase
-          .from('log_entries')
-          .select('*')
-          .eq('category', 'data-sc')
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .single();
+      // Use Promise.allSettled to fetch data in parallel and continue even if some requests fail
+      const [sourceChangeResult, mainCoilResult, workordersResult, downtimesResult] = await Promise.allSettled([
+        // Fetch latest source change data
+        fetchWithRetry(async () => {
+          const { data, error } = await supabase
+            .from('log_entries')
+            .select('*')
+            .eq('category', 'data-sc')
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
 
-        if (error) throw error;
-        return data;
-      });
-
-      if (sourceChangeData) {
+          if (error) throw error;
+          return data;
+        }),
+        
         // Fetch latest main coil tuning data
-        const mainCoilData = await fetchWithRetry(async () => {
+        fetchWithRetry(async () => {
           const { data, error } = await supabase
             .from('log_entries')
             .select('*')
@@ -192,8 +196,42 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
 
           if (error) throw error;
           return data;
-        });
+        }),
+        
+        // Fetch workorders
+        fetchWithRetry(async () => {
+          let query = supabase
+            .from('workorders')
+            .select('*')
+            .order('created_at', { ascending: false });
+          const { data, error } = await query;
+          if (error) throw error;
+          return data;
+        }),
+        
+        // Fetch downtime summary
+        fetchWithRetry(async () => {
+          const { data, error } = await supabase
+            .from('log_entries')
+            .select('*')
+            .eq('category', 'downtime')
+            .order('created_at', { ascending: false });
 
+          if (error) throw error;
+          return data;
+        })
+      ]);
+
+      // Process source change data
+      if (sourceChangeResult.status === 'fulfilled' && sourceChangeResult.value) {
+        const sourceChangeData = sourceChangeResult.value;
+        
+        // Process main coil data
+        let mainCoilData = null;
+        if (mainCoilResult.status === 'fulfilled') {
+          mainCoilData = mainCoilResult.value;
+        }
+        
         if (mounted.current) {
           setSourceData({
             currentSource: sourceChangeData.inserted_source_number,
@@ -205,17 +243,24 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
         }
       }
 
-      // Fetch main coil tuning data for graph
-      const mcData = await fetchWithRetry(async () => {
-        const { data, error } = await supabase
-          .from('log_entries')
-          .select('*')
-          .eq('category', 'data-mc')
-          .order('created_at', { ascending: true });
+      // Process main coil tuning data for graph
+      const fetchMCGraphData = async () => {
+        try {
+          const { data, error } = await supabase
+            .from('log_entries')
+            .select('*')
+            .eq('category', 'data-mc')
+            .order('created_at', { ascending: true });
 
-        if (error) throw error;
-        return data;
-      });
+          if (error) throw error;
+          return data;
+        } catch (error) {
+          console.error('Error fetching MC graph data:', error);
+          return [];
+        }
+      };
+
+      const mcData = await fetchMCGraphData();
 
       if (mcData && mcData.length > 0 && mounted.current) {
         const validData = mcData.filter((d: LogEntry) => 
@@ -237,17 +282,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
         });
       }
 
-      // Fetch workorders from workorders table
-      const workorders = await fetchWithRetry(async () => {
-        let query = supabase
-          .from('workorders')
-          .select('*')
-          .order('created_at', { ascending: false });
-        const { data, error } = await query;
-        if (error) throw error;
-        return data;
-      });
-      if (workorders && mounted.current) {
+      // Process workorder data
+      if (workordersResult.status === 'fulfilled' && workordersResult.value && mounted.current) {
+        const workorders = workordersResult.value;
         // Filter by prefered_start_time for date range
         const filteredWorkorders = filterDataByDateRange(workorders, 'prefered_start_time');
         setAllWorkorders(filteredWorkorders);
@@ -259,19 +296,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
         });
       }
 
-      // Fetch downtime summary
-      const downtimes = await fetchWithRetry(async () => {
-        const { data, error } = await supabase
-          .from('log_entries')
-          .select('*')
-          .eq('category', 'downtime')
-          .order('created_at', { ascending: false });
-
-        if (error) throw error;
-        return data;
-      });
-
-      if (downtimes && mounted.current) {
+      // Process downtime data
+      if (downtimesResult.status === 'fulfilled' && downtimesResult.value && mounted.current) {
+        const downtimes = downtimesResult.value;
         // Use the correct downtime date filter for all status counts and cases
         const filteredDowntimes = filterDowntimeByDateRange(downtimes);
         const closedCases = filteredDowntimes.filter((d: LogEntry) => d.case_status === 'closed');
@@ -294,9 +321,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
       }
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
-      toast.error('Failed to load dashboard data');
+      if (showLoading) {
+        toast.error('Failed to load dashboard data');
+      }
     } finally {
-      if (mounted.current) {
+      if (mounted.current && showLoading) {
         setLoading(false);
       }
     }
@@ -383,7 +412,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
       { event: '*', schema: 'public', table: 'workorders' },
       debouncedFetch
     );
+    
     subscriptionRef.current = channel.subscribe();
+    
+    // Return the channel object for proper cleanup
     return channel;
   }, [fetchDashboardData]);
 
@@ -423,6 +455,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
     fetchDashboardData();
   }, [dateRange, customRange, fetchDashboardData]);
 
+  // Helper function to refresh session
   const refreshSession = async () => {
     try {
       const { data: { session }, error } = await supabase.auth.getSession();
@@ -439,6 +472,32 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
       return null;
     }
   };
+
+  // Add this effect to handle tab visibility changes
+  useEffect(() => {
+    let isRefreshing = false;
+    
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && mounted.current && visible) {
+        // Avoid refreshing multiple times quickly
+        if (isRefreshing) return;
+        isRefreshing = true;
+        
+        console.log('Dashboard: Tab became visible, refreshing data quietly');
+        // Do a quiet data refresh without setting loading state
+        fetchDashboardData(false);
+        // Reset refreshing flag after a short delay
+        setTimeout(() => {
+          isRefreshing = false;
+        }, 1000);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [fetchDashboardData, visible]);
 
   const fetchWithRetry = async (fetchFn: () => Promise<any>, retryCount = 0): Promise<any> => {
     try {

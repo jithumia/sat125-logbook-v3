@@ -78,7 +78,7 @@ type EngineerListItem = {
 
 const initialState: FormState = {
   category: 'general',
-  description: '',
+    description: '',
   shift_type: 'morning',
   // Main Coil Tuning Data
   mc_setpoint: 748.40,
@@ -124,6 +124,41 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
   // Add lastSourceChange state here
   const [lastSourceChange, setLastSourceChange] = useState<any>(null);
 
+  // Add a ref to track if the form is mounted
+  const isMounted = useRef(true);
+  
+  useEffect(() => {
+    // Handle visibility change to ensure form inputs stay responsive
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && isMounted.current) {
+        console.log('LogEntryForm: Tab visible, ensuring inputs are working');
+        // No need to force blur/focus - let browser handle it naturally
+      }
+    };
+    
+    // Handle form focus 
+    const handleFormFocus = () => {
+      // This helps fix copy-paste issues but more gently
+      const focusedElement = document.activeElement;
+      if (focusedElement instanceof HTMLInputElement || 
+          focusedElement instanceof HTMLTextAreaElement || 
+          focusedElement instanceof HTMLSelectElement) {
+        // Just log and let the browser handle it naturally
+        console.log('Input element focused after tab switch');
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFormFocus);
+    
+    // Cleanup on unmount
+    return () => {
+      isMounted.current = false;
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFormFocus);
+    };
+  }, []);
+
   // Fetch the most recent source change log when category is set to 'data-sc'
   useEffect(() => {
     if (formState.category === 'data-sc') {
@@ -168,7 +203,7 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
   // Add this useEffect after the other useEffects in LogEntryForm:
   useEffect(() => {
     async function fetchEngineers() {
-      const { data, error } = await supabase
+        const { data, error } = await supabase
         .from('engineers')
         .select('id, name, user_id, created_at')
         .order('name');
@@ -235,7 +270,14 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    // Validate based on category
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    
+    // Clear previous validation state
+    setValidationErrors({});
+    setShowValidationMessage(false);
+    
+    // Validate the form based on the selected category
     let errors: ValidationErrors = {};
     if (formState.category === 'data-sc') {
       errors = validateSourceChangeData(formState);
@@ -253,17 +295,39 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
     if (hasErrors) {
       setShowValidationMessage(true);
       toast.error('Please fill in all required fields');
+      setIsSubmitting(false);
       return;
     }
 
-    setIsSubmitting(true);
-
     try {
-      // Get current user session
-      const { data: { session } } = await supabase.auth.getSession();
+      // Get current user session with retry mechanism
+      let session = null;
+      let retryCount = 0;
+      const maxRetries = 2;
+      
+      while (!session && retryCount <= maxRetries) {
+        try {
+          const { data, error } = await supabase.auth.getSession();
+          if (error) throw error;
+          session = data.session;
+        } catch (sessionError) {
+          console.error(`Session error (attempt ${retryCount + 1}):`, sessionError);
+          
+          if (retryCount < maxRetries) {
+            // Wait before retrying
+            await new Promise(resolve => setTimeout(resolve, 500));
+            retryCount++;
+            // Try to refresh the session
+            await supabase.auth.refreshSession();
+          } else {
+            throw sessionError;
+          }
+        }
+      }
       
       if (!session?.user) {
         toast.error('You must be logged in to create entries');
+        setIsSubmitting(false);
         return;
       }
 
