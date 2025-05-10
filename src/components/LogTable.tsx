@@ -160,14 +160,10 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
         `)
         .order('created_at', { ascending: false });
 
-      // Debug: Log activeShift and showAllLogs
-      console.log('fetchLogs: showAllLogs', showAllLogs);
-      console.log('fetchLogs: activeShift', activeShift);
-
       // Apply filters based on showAllLogs
       if (!showAllLogs && activeShift) {
-        // Instead of using activeShift.started_at, find the latest 'shift started' log for the current shift type
-        const { data: shiftStartLogs, error: shiftStartError } = await supabase
+        // Use the latest 'shift started' log for the current shift type
+        const { data: shiftStartLogs } = await supabase
           .from('log_entries')
           .select('created_at')
           .eq('category', 'shift')
@@ -175,15 +171,10 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
           .ilike('description', '%shift started%')
           .order('created_at', { ascending: false })
           .limit(1);
-        if (shiftStartError) {
-          console.error('fetchLogs: error fetching shift start log', shiftStartError);
-        }
         let shiftStartTime = activeShift.started_at;
         if (shiftStartLogs && shiftStartLogs.length > 0) {
           shiftStartTime = shiftStartLogs[0].created_at;
         }
-        // Debug: Log shiftStartTime
-        console.log('fetchLogs: using shiftStartTime for filter', shiftStartTime);
         query = query.gte('created_at', shiftStartTime);
       }
 
@@ -208,15 +199,7 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
       // Execute the query
       const { data, error } = await query;
 
-      // Debug: Log fetched data
-      console.log('fetchLogs: fetched data', data);
-      if (data && data.length > 0) {
-        console.log('fetchLogs: first log created_at', data[data.length - 1].created_at);
-        console.log('fetchLogs: last log created_at', data[0].created_at);
-      }
-
       if (error) {
-        console.error('Supabase query error:', error);
         throw error;
       }
 
