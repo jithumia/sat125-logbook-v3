@@ -267,7 +267,6 @@ function App() {
   const [showReportModal, setShowReportModal] = useState(false);
   const [showAllLogs, setShowAllLogs] = useState(false);
   const [activeShift, setActiveShift] = useState<ActiveShift | null>(null);
-  const [loading, setLoading] = useState(true);
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [searchFilters, setSearchFilters] = useState<SearchFilters>({
@@ -329,83 +328,19 @@ function App() {
     reloadAllData();
   };
 
-  // Add loading timeout for initial auth
+  // Listen for Supabase auth state changes and update session state
   useEffect(() => {
-    let mounted = true;
-    let timeoutId: NodeJS.Timeout;
-
-    async function initializeAuth() {
-      try {
-        setLoading(true);
-        console.log('Starting auth initialization...');
-        
-        // Set a shorter timeout
-        timeoutId = setTimeout(() => {
-          if (mounted) {
-            console.error('Auth initialization timeout');
-            setLoading(false);
-            setSession(null);
-            toast.error('Connection timeout - please refresh the page');
-          }
-        }, 8000); // 8 second timeout
-
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-        
-        if (sessionError) {
-          console.error('Session error:', sessionError);
-          throw sessionError;
-        }
-
-        console.log('Session retrieved:', session ? 'Valid session' : 'No session');
-
-        if (mounted) {
-          setSession(session);
-          if (session) {
-            try {
-            await fetchActiveShift();
-              console.log('Active shift fetched successfully');
-            } catch (shiftError) {
-              console.error('Error fetching active shift:', shiftError);
-              toast.error('Error loading shift data');
-          }
-          }
-        }
-      } catch (error) {
-        console.error('Auth initialization error:', error);
-        if (mounted) {
-          setLoading(false);
-          setSession(null);
-          toast.error('Failed to initialize - please refresh the page');
-        }
-      } finally {
-        if (mounted) {
-          setLoading(false);
-          clearTimeout(timeoutId);
-        }
-      }
-    }
-
-    initializeAuth();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      console.log('Auth state changed:', _event, session ? 'Has session' : 'No session');
-      if (mounted) {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_IN') {
         setSession(session);
-        if (session) {
-          try {
-            await fetchActiveShift();
-          } catch (error) {
-            console.error('Error fetching active shift after auth change:', error);
-          }
-        }
-        setLoading(false);
+        fetchActiveShift();
+      }
+      if (event === 'SIGNED_OUT') {
+        setSession(null);
       }
     });
-
     return () => {
-      mounted = false;
-      clearTimeout(timeoutId);
-      subscription?.unsubscribe();
+      subscription.unsubscribe();
     };
   }, []);
 
@@ -459,40 +394,22 @@ function App() {
     checkAdminStatus();
   }, []);
 
-  const fetchRecentLogs = async (showLoading = true) => {
+  const fetchRecentLogs = async () => {
     try {
-      // Only show loading indicator if explicitly requested and tab is visible
-      if (showLoading && document.visibilityState === 'visible') {
-        setLoading(true);
-      }
-      
       const { data, error } = await supabase
         .from('log_entries')
         .select('*')
         .in('category', ['error', 'downtime'])
         .order('created_at', { ascending: false });
-
       if (error) throw error;
       setRecentLogs(data || []);
     } catch (error) {
-      console.error('Error fetching recent logs:', error);
-      if (showLoading) {
-        toast.error('Failed to fetch recent logs');
-      }
-    } finally {
-      if (showLoading) {
-        setLoading(false);
-      }
+      toast.error('Failed to fetch recent logs');
     }
   };
 
-  const fetchActiveShift = async (showLoading = true) => {
+  const fetchActiveShift = async () => {
     try {
-      // Only show loading indicator if explicitly requested and tab is visible
-      if (showLoading && document.visibilityState === 'visible') {
-        setLoading(true);
-      }
-      
       const { data: activeShifts, error } = await supabase
         .from('active_shifts')
         .select(`
@@ -504,9 +421,7 @@ function App() {
         .order('started_at', { ascending: false })
         .limit(1)
         .maybeSingle();
-
       if (error) throw error;
-
       if (activeShifts) {
         setActiveShift(activeShifts);
         setCurrentShift(activeShifts.shift_type);
@@ -515,14 +430,7 @@ function App() {
         setCurrentShift(undefined);
       }
     } catch (error) {
-      console.error('Error fetching active shift:', error);
-      if (showLoading) {
       toast.error('Failed to fetch active shift status');
-      }
-    } finally {
-      if (showLoading) {
-        setLoading(false);
-      }
     }
   };
 
@@ -530,7 +438,9 @@ function App() {
     try {
       const { error } = await supabase.auth.signOut();
       if (error) throw error;
+      setSession(null);
       toast.success('Signed out successfully');
+      window.location.reload();
     } catch (error) {
       console.error('Error signing out:', error);
       toast.error('Error signing out');
@@ -1235,72 +1145,6 @@ function App() {
     }
   };
 
-  useEffect(() => {
-    let timeoutId: NodeJS.Timeout;
-    if (loading) {
-      timeoutId = setTimeout(() => {
-        toast((t) => (
-          <span>
-            App is taking longer than usual to load. <button onClick={() => { reloadAllData(); toast.dismiss(t.id); }} className="underline text-indigo-400">Refresh</button>
-          </span>
-        ), { duration: 10000 });
-      }, 10000);
-    }
-    return () => clearTimeout(timeoutId);
-  }, [loading]);
-
-  // Add this useEffect to handle tab visibility changes
-  useEffect(() => {
-    // Use this flag to avoid double-refreshing
-    let isRefreshing = false;
-    
-    const handleVisibilityChange = async () => {
-      if (document.visibilityState === 'visible') {
-        // Don't show any loading indicators or mangle the session state
-        if (isRefreshing) return;
-        isRefreshing = true;
-        
-        console.log('Tab is now visible, refreshing data quietly');
-        try {
-          // Check connection but don't modify the session state
-          const { data: { session } } = await supabase.auth.getSession();
-          if (session) {
-            // Only refresh data without changing app state
-            await fetchRecentLogs(false);
-            // Set a flag to refresh everything after any edits are complete
-            if (!isEditing) {
-              reloadAllData();
-            } else {
-              setRefreshAfterEditing(true);
-            }
-          }
-        } catch (error) {
-          console.error('Error refreshing data:', error);
-        } finally {
-          // Reset the refreshing flag with a small delay to prevent rapid triggers
-          setTimeout(() => {
-            isRefreshing = false;
-          }, 1000);
-        }
-      }
-    };
-
-    // Function to handle window focus for form inputs
-    const handleWindowFocus = () => {
-      // Intentionally do nothing - let the form handle its own focus state
-    };
-
-    // Add the visibility change listener
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('focus', handleWindowFocus);
-
-    // Clean up the listeners when component unmounts
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('focus', handleWindowFocus);
-    };
-  }, []);
-
   // Fix TypeScript errors for addAttachmentUrlsToLogs
   async function addAttachmentUrlsToLogs(logs: LogEntry[]): Promise<LogEntry[]> {
     for (const log of logs) {
@@ -1323,7 +1167,6 @@ function App() {
 
   // Fetch all closed shifts and their logs
   const fetchClosedShifts = async () => {
-    setLoadingShifts(true);
     try {
       // Fetch all logs
       const { data, error } = await supabase
@@ -1334,8 +1177,8 @@ function App() {
       // Add attachment URLs
       const logsWithUrls = await addAttachmentUrlsToLogs(data || []);
       // Group logs by shift (same as LogTable)
-      const groupedShifts = [];
-      let currentGroup = null;
+      const groupedShifts: ShiftGroup[] = [];
+      let currentGroup: ShiftGroup | null = null;
       for (const log of logsWithUrls) {
         if (log.category === 'shift') {
           if (log.description.includes('shift started')) {
@@ -1371,8 +1214,6 @@ function App() {
     } catch (err) {
       toast.error('Failed to fetch closed shifts');
       setClosedShifts([]);
-    } finally {
-      setLoadingShifts(false);
     }
   };
 
@@ -1382,27 +1223,13 @@ function App() {
     fetchClosedShifts();
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-indigo-900 flex items-center justify-center">
-        <div className="flex flex-col items-center space-y-4">
-          <div className="bg-[#8CC63F] rounded-xl p-2.5 mb-4 shadow-lg shadow-[#8CC63F]/20">
-            <img 
-              src="/iba-logo.ico" 
-              alt="IBA Logo" 
-              className="h-12 w-12"
-            />
-          </div>
-          <div className="flex items-center space-x-3">
-            <div className="w-3 h-3 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
-            <div className="w-3 h-3 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
-            <div className="w-3 h-3 bg-blue-500 rounded-full animate-bounce"></div>
-          </div>
-          <p className="text-white/80 text-sm">Loading your session...</p>
-        </div>
-      </div>
-    );
-  }
+  // On initial load and after login, always call fetchActiveShift before rendering main UI
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) fetchActiveShift();
+    });
+  }, []);
 
   if (!session) {
   return (
@@ -1423,14 +1250,14 @@ function App() {
             <div className="mb-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-semibold text-white">Welcome Back</h2>
-              <button
-                  onClick={() => setShowSignupRequest(true)}
-                  className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
-              >
-                  Request Access
-              </button>
-              </div>
-              <p className="text-sm text-gray-400">Please sign in to continue to the logbook system.</p>
+                <button
+                    onClick={() => setShowSignupRequest(true)}
+                    className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
+                >
+                    Request Access
+                </button>
+                </div>
+                <p className="text-sm text-gray-400">Please sign in to continue to the logbook system.</p>
             </div>
             {authComponent}
           </div>
@@ -1968,26 +1795,7 @@ function App() {
           activeShift={activeShift}
         />
       )}
-        {showStartShift && (
-          <StartShiftModal 
-            onClose={() => {
-              setShowStartShift(false);
-              reloadAllData();
-            }} 
-          onSuccess={fetchActiveShift}
-          />
-        )}
-      {showEndShift && (
-          <EndShiftModal 
-            onClose={() => {
-              setShowEndShift(false);
-              reloadAllData();
-            }}
-            onSuccess={fetchActiveShift}
-            activeShift={activeShift}
-          />
-        )}
-        {showReportModal && (
+      {showReportModal && (
         <ShiftReport
           isOpen={showReportModal}
           onClose={() => {
@@ -2066,6 +1874,33 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+      {showStartShift && (
+        <StartShiftModal
+          onClose={() => {
+            setShowStartShift(false);
+            fetchActiveShift();
+            reloadAllData();
+          }}
+          onSuccess={() => {
+            fetchActiveShift();
+            reloadAllData();
+          }}
+        />
+      )}
+      {showEndShift && (
+        <EndShiftModal
+          onClose={() => {
+            setShowEndShift(false);
+            fetchActiveShift();
+            reloadAllData();
+          }}
+          onSuccess={() => {
+            fetchActiveShift();
+            reloadAllData();
+          }}
+          activeShift={activeShift}
+        />
       )}
     </div>
   );

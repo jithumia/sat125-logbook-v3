@@ -92,227 +92,15 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
   }, [showDowntimeModal, editingLog, refreshAfterEditing]);
 
   useEffect(() => {
-    let debounceTimeout: NodeJS.Timeout | null = null;
-    let isSubscribed = true;
-    const debouncedFetch = () => {
-      if (debounceTimeout) clearTimeout(debounceTimeout);
-      debounceTimeout = setTimeout(() => {
-        if (isSubscribed) {
-          if (!isEditing.current) {
-            fetchLogs();
-            fetchCriticalEvents();
-          } else {
-            // If we're editing, set a flag to refresh after editing is done
-            setRefreshAfterEditing(true);
-          }
-        }
-      }, 400);
-    };
+    setLoading(true);
     fetchLogs();
     fetchCriticalEvents();
-    supabase.from('engineers').select('id, name').then(({ data }) => {
-      if (data) {
-        const map: Record<string, string> = {};
-        data.forEach(e => { map[e.id] = e.name; });
-        setEngineerMap(map);
-      }
-    });
-    // Subscribe to real-time changes only if visible (i.e., current shift or all logs)
-    const channel = supabase.channel('log-updates');
-    const subscription = channel
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'log_entries'
-        },
-        debouncedFetch
-      )
-      .subscribe();
-    return () => {
-      isSubscribed = false;
-      subscription.unsubscribe();
-      if (debounceTimeout) clearTimeout(debounceTimeout);
-    };
-  }, [showAllLogs, searchFilters, activeShift]);
+  }, [showAllLogs, activeShift, searchFilters]);
 
   useEffect(() => {
     // Update parent's isEditing state
     setIsEditing(showDowntimeModal || editingLog !== null);
   }, [showDowntimeModal, editingLog, setIsEditing]);
-
-  // Add visibility change handler to refresh logs when tab becomes visible
-  useEffect(() => {
-    // Create a ref to track component mount state
-    const isMounted = { current: true };
-    // Add flag to prevent double refreshes
-    let isRefreshing = false;
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && isMounted.current) {
-        // Prevent multiple rapid refreshes
-        if (isRefreshing) return;
-        isRefreshing = true;
-        
-        console.log('LogTable: Tab became visible, refreshing logs quietly');
-        // Call the quiet versions of fetch functions to avoid loading states
-        fetchLogsQuietly();
-        fetchCriticalEventsQuietly();
-        
-        // Reset the refreshing flag after a delay
-        setTimeout(() => {
-          isRefreshing = false;
-        }, 1000);
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    
-    // Cleanup
-    return () => {
-      isMounted.current = false;
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, []);
-
-  // Add quiet versions of fetch functions that don't change the loading state
-  const fetchLogsQuietly = async () => {
-    try {
-      // Same as fetchLogs but without setting loading state
-      let query = supabase
-              .from('log_entries')
-              .select(`
-                *,
-                attachments (
-                  id,
-                  file_name,
-                  file_type,
-                  file_size,
-                  file_path,
-                  created_at
-                )
-              `)
-        .order('created_at', { ascending: false });
-
-      // Apply filters based on showAllLogs
-      if (!showAllLogs && activeShift) {
-        // Use the latest 'shift started' log for the current shift type
-        const { data: shiftStartLogs } = await supabase
-          .from('log_entries')
-          .select('created_at')
-          .eq('category', 'shift')
-          .eq('shift_type', activeShift.shift_type)
-          .ilike('description', '%shift started%')
-          .order('created_at', { ascending: false })
-          .limit(1);
-        let shiftStartTime = activeShift.started_at;
-        if (shiftStartLogs && shiftStartLogs.length > 0) {
-          shiftStartTime = shiftStartLogs[0].created_at;
-        }
-        query = query.gte('created_at', shiftStartTime);
-      }
-
-      // Apply other filters (same as in fetchLogs)
-      if (searchFilters.startDate) {
-        const startDate = new Date(searchFilters.startDate);
-        startDate.setHours(0, 0, 0, 0);
-        query = query.gte('created_at', startDate.toISOString());
-      }
-
-      if (searchFilters.endDate) {
-        const endDate = new Date(searchFilters.endDate);
-        endDate.setHours(23, 59, 59, 999);
-        query = query.lte('created_at', endDate.toISOString());
-      }
-
-      if (searchFilters.shiftType) {
-        query = query.eq('shift_type', searchFilters.shiftType);
-      }
-
-      const { data, error } = await query;
-
-      if (error) throw error;
-
-      if (!data) {
-        setRawLogs([]);
-        setLogs([]);
-        return;
-      }
-
-      const logsWithUrls = await addAttachmentUrlsToLogs(data);
-      
-      // Process results (same as fetchLogs)
-      // ... rest of the processing logic from fetchLogs
-      const groupedLogs: ShiftGroup[] = [];
-      let currentGroup: ShiftGroup | null = null;
-
-      // Sort data chronologically
-      const sortedData = [...logsWithUrls].sort((a, b) => 
-        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-      );
-
-      // Group logs by shift
-      for (const log of sortedData) {
-        // Skip if category filter is active and doesn't match
-        if (searchFilters.category && 
-            log.category !== searchFilters.category && 
-            log.category !== 'shift') {
-          continue;
-        }
-
-        if (log.category === 'shift') {
-          if (log.description.includes('shift started')) {
-            // Close previous group if exists
-            if (currentGroup && !currentGroup.endTime) {
-              currentGroup.endTime = log.created_at;
-            }
-            // Start new group
-            currentGroup = {
-              shiftType: log.shift_type,
-              startTime: log.created_at,
-              endTime: null,
-              logs: [log]
-            };
-            groupedLogs.push(currentGroup);
-          } else if (log.description.includes('shift ended') && currentGroup) {
-            if (currentGroup.shiftType === log.shift_type) {
-              currentGroup.endTime = log.created_at;
-              currentGroup.logs.push(log);
-              currentGroup = null;
-            }
-          }
-        } else if (currentGroup) {
-          currentGroup.logs.push(log);
-        }
-      }
-
-      // Only reverse once here
-      const reversedGroups = groupedLogs.reverse();
-      setRawLogs(reversedGroups);
-      setLogs(reversedGroups);
-    } catch (error) {
-      console.error('Error in fetchLogsQuietly:', error);
-      // Don't show error toast to avoid UI disruption
-    }
-  };
-
-  const fetchCriticalEventsQuietly = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('log_entries')
-        .select('*')
-        .in('category', ['error', 'downtime'])
-        .order('created_at', { ascending: false })
-        .limit(5);
-
-      if (error) throw error;
-      setCriticalEvents(data || []);
-    } catch (error) {
-      console.error('Error fetching critical events quietly:', error);
-      // Don't show error toast
-    }
-  };
 
   // Regular fetch functions with loading state
   const fetchLogs = async () => {
@@ -339,7 +127,8 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
 
       // Apply filters based on showAllLogs
       if (!showAllLogs && activeShift) {
-        // Use the latest 'shift started' log for the current shift type
+        // Always use activeShift.started_at as the lower bound
+        let shiftStartTime = activeShift.started_at;
         const { data: shiftStartLogs } = await supabase
           .from('log_entries')
           .select('created_at')
@@ -348,9 +137,12 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
           .ilike('description', '%shift started%')
           .order('created_at', { ascending: false })
           .limit(1);
-        let shiftStartTime = activeShift.started_at;
         if (shiftStartLogs && shiftStartLogs.length > 0) {
-          shiftStartTime = shiftStartLogs[0].created_at;
+          // Use the earlier of the two times
+          const logTime = shiftStartLogs[0].created_at;
+          if (new Date(logTime) < new Date(shiftStartTime)) {
+            shiftStartTime = logTime;
+          }
         }
         query = query.gte('created_at', shiftStartTime);
       }
@@ -444,86 +236,6 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
       setLoading(false);
     }
   };
-
-  // Update the client-side filtering for the search bar keyword
-  useEffect(() => {
-    let filteredGroups = rawLogs;
-
-    // Filter by keyword
-    if (searchFilters.keyword && searchFilters.keyword.trim() !== '') {
-      const keyword = searchFilters.keyword.trim().toLowerCase();
-      filteredGroups = filteredGroups.map(group => ({
-        ...group,
-        logs: group.logs.filter(log => {
-          // Include shift entries and check for engineer name in shift entries
-          if (log.category === 'shift') {
-            const shiftDesc = log.description.toLowerCase();
-            return shiftDesc.includes(keyword) || // Match shift description
-                   (shiftDesc.includes('shift started by') && shiftDesc.includes(keyword)) || // Match engineer name in start entry
-                   (shiftDesc.includes('shift ended by') && shiftDesc.includes(keyword)); // Match engineer name in end entry
-          }
-
-          // For Main Coil Tuning (data-mc), search all relevant fields
-          if (log.category === 'data-mc') {
-            return [
-              log.description,
-              log.mc_setpoint,
-              log.yoke_temperature,
-              log.arc_current,
-              log.filament_current,
-              log.p1e_x_width,
-              log.p1e_y_width,
-              log.p2e_x_width,
-              log.p2e_y_width
-            ].some(val => val !== undefined && val !== null && val.toString().toLowerCase().includes(keyword));
-          }
-
-          // For Source Change (data-sc), search all relevant fields
-          if (log.category === 'data-sc') {
-            // Engineer names
-            const engineerNames = log.engineers && Array.isArray(log.engineers) && engineerMap
-              ? log.engineers.map(id => engineerMap[id] || id).join(', ').toLowerCase()
-              : '';
-            return [
-              log.description,
-              log.removed_source_number,
-              log.removed_filament_current,
-              log.removed_arc_current,
-              log.removed_filament_counter,
-              log.inserted_source_number,
-              log.inserted_filament_current,
-              log.inserted_arc_current,
-              log.inserted_filament_counter,
-              log.workorder_number,
-              log.case_number,
-              engineerNames,
-              // Filament hours (calculated)
-              (typeof log.inserted_filament_counter === 'number' && typeof log.removed_filament_counter === 'number')
-                ? (log.inserted_filament_counter - log.removed_filament_counter).toFixed(2)
-                : ''
-            ].some(val => val !== undefined && val !== null && val.toString().toLowerCase().includes(keyword));
-          }
-
-          // For other entries, check description and category
-          return (log.description && log.description.toLowerCase().includes(keyword)) ||
-                 (log.category && log.category.toLowerCase().includes(keyword));
-        })
-      })).filter(group => group.logs.length > 0);
-    }
-
-    // Filter by category
-    if (searchFilters.category) {
-      filteredGroups = filteredGroups.map(group => ({
-        ...group,
-        logs: group.logs.filter(log =>
-          log.category === searchFilters.category || 
-          (searchFilters.category === 'shift' && log.category === 'shift')
-        )
-      })).filter(group => group.logs.length > 0);
-    }
-
-    setLogs(filteredGroups);
-  }, [rawLogs, searchFilters, engineerMap]);
 
   const fetchCriticalEvents = async () => {
     try {
@@ -1294,7 +1006,156 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     );
   };
 
-  // In addAttachmentUrlsToLogs, add a type annotation:
+  // If not showing all logs and no active shift, show a message and do not fetch logs
+  useEffect(() => {
+    if (!showAllLogs && !activeShift) {
+      setLoading(false);
+    }
+  }, [showAllLogs, activeShift]);
+
+  // Add a fallback useEffect to always clear loading if logs or criticalEvents are updated but loading is still true
+  useEffect(() => {
+    if (loading && (logs.length > 0 || criticalEvents.length > 0)) {
+      setLoading(false);
+    }
+  }, [logs, criticalEvents, loading]);
+
+  // Move fetchLogsQuietly and fetchCriticalEventsQuietly above the new useEffect for visibilitychange
+  const fetchLogsQuietly = async () => {
+    setLoading(true);
+    try {
+      let query = supabase
+        .from('log_entries')
+        .select(`
+          *,
+          attachments (
+            id,
+            file_name,
+            file_type,
+            file_size,
+            file_path,
+            created_at
+          )
+        `)
+        .order('created_at', { ascending: false });
+      if (!showAllLogs && activeShift) {
+        const { data: shiftStartLogs } = await supabase
+          .from('log_entries')
+          .select('created_at')
+          .eq('category', 'shift')
+          .eq('shift_type', activeShift.shift_type)
+          .ilike('description', '%shift started%')
+          .order('created_at', { ascending: false })
+          .limit(1);
+        let shiftStartTime = activeShift.started_at;
+        if (shiftStartLogs && shiftStartLogs.length > 0) {
+          shiftStartTime = shiftStartLogs[0].created_at;
+        }
+        query = query.gte('created_at', shiftStartTime);
+      }
+      if (searchFilters.startDate) {
+        const startDate = new Date(searchFilters.startDate);
+        startDate.setHours(0, 0, 0, 0);
+        query = query.gte('created_at', startDate.toISOString());
+      }
+      if (searchFilters.endDate) {
+        const endDate = new Date(searchFilters.endDate);
+        endDate.setHours(23, 59, 59, 999);
+        query = query.lte('created_at', endDate.toISOString());
+      }
+      if (searchFilters.shiftType) {
+        query = query.eq('shift_type', searchFilters.shiftType);
+      }
+      const { data, error } = await query;
+      if (error) throw error;
+      if (!data) {
+        setRawLogs([]);
+        setLogs([]);
+        return;
+      }
+      const logsWithUrls = await addAttachmentUrlsToLogs(data);
+      const groupedLogs: ShiftGroup[] = [];
+      let currentGroup: ShiftGroup | null = null;
+      const sortedData = [...logsWithUrls].sort((a, b) => 
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      );
+      for (const log of sortedData) {
+        if (searchFilters.category && 
+            log.category !== searchFilters.category && 
+            log.category !== 'shift') {
+          continue;
+        }
+        if (log.category === 'shift') {
+          if (log.description.includes('shift started')) {
+            if (currentGroup && !currentGroup.endTime) {
+              currentGroup.endTime = log.created_at;
+            }
+            currentGroup = {
+              shiftType: log.shift_type,
+              startTime: log.created_at,
+              endTime: null,
+              logs: [log]
+            };
+            groupedLogs.push(currentGroup);
+          } else if (log.description.includes('shift ended') && currentGroup) {
+            if (currentGroup.shiftType === log.shift_type) {
+              currentGroup.endTime = log.created_at;
+              currentGroup.logs.push(log);
+              currentGroup = null;
+            }
+          }
+        } else if (currentGroup) {
+          currentGroup.logs.push(log);
+        }
+      }
+      const reversedGroups = groupedLogs.reverse();
+      setRawLogs(reversedGroups);
+      setLogs(reversedGroups);
+    } catch (error) {
+      console.error('Error in fetchLogsQuietly:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+  const fetchCriticalEventsQuietly = async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('log_entries')
+        .select('*')
+        .in('category', ['error', 'downtime'])
+        .order('created_at', { ascending: false })
+        .limit(5);
+      if (error) throw error;
+      setCriticalEvents(data || []);
+    } catch (error) {
+      console.error('Error fetching critical events quietly:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Add a useEffect to listen for 'visibilitychange' and trigger background fetches
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchLogsQuietly();
+        fetchCriticalEventsQuietly();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
+  if (!showAllLogs && !activeShift) {
+    return (
+      <div className="flex justify-center items-center h-64 text-gray-400 text-lg">
+        No active shift. Start a shift to begin logging entries.
+      </div>
+    );
+  }
+
+  // Restore addAttachmentUrlsToLogs helper
   async function addAttachmentUrlsToLogs(logs: (LogEntry & { attachments?: AttachmentWithUrl[] })[]) {
     for (const log of logs) {
       if (log.attachments && log.attachments.length > 0) {
@@ -1314,6 +1175,7 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     return logs;
   }
 
+  // Restore getPreviousRemovedFilamentCounter helper
   function getPreviousRemovedFilamentCounter(log: LogEntry, logs: LogEntry[]): number | null {
     // Find the previous data-sc log before this one, for the same removed_source_number
     const currentIndex = logs.findIndex(l => l.id === log.id);
@@ -1331,10 +1193,10 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     return null;
   }
 
-  if (loading) {
+  if (!loading && logs.length === 0) {
     return (
-      <div className="flex justify-center items-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-400"></div>
+      <div className="flex justify-center items-center h-64 text-gray-400 text-lg">
+        No logs found for this view.
       </div>
     );
   }

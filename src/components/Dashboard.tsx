@@ -473,32 +473,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
     }
   };
 
-  // Add this effect to handle tab visibility changes
-  useEffect(() => {
-    let isRefreshing = false;
-    
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && mounted.current && visible) {
-        // Avoid refreshing multiple times quickly
-        if (isRefreshing) return;
-        isRefreshing = true;
-        
-        console.log('Dashboard: Tab became visible, refreshing data quietly');
-        // Do a quiet data refresh without setting loading state
-        fetchDashboardData(false);
-        // Reset refreshing flag after a short delay
-        setTimeout(() => {
-          isRefreshing = false;
-        }, 1000);
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [fetchDashboardData, visible]);
-
   const fetchWithRetry = async (fetchFn: () => Promise<any>, retryCount = 0): Promise<any> => {
     try {
       const session = await refreshSession();
@@ -629,6 +603,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
     pending: filteredWorkorders.filter((w: any) => w.status === 'pending').length,
     closed: filteredWorkorders.filter((w: any) => w.status === 'closed').length
   };
+
+  // Add a fallback useEffect to always clear loading if any dashboard data is updated but loading is still true
+  useEffect(() => {
+    if (loading && (sourceData || mainCoilData.dates.length > 0 || allWorkorders.length > 0 || downtimeSummary.cases.length > 0)) {
+      setLoading(false);
+    }
+  }, [sourceData, mainCoilData, allWorkorders, downtimeSummary, loading]);
 
   if (loading) {
     return (
