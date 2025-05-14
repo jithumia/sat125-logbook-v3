@@ -935,10 +935,12 @@ function App() {
             `${window.location.origin}/storage/v1/object/public/attachments/${a.file_path}`
           ).join(';') || '';
           const prev = getPreviousRemovedFilamentCounter(log, arr);
-          const filamentHours =
-            typeof log.removed_filament_counter === 'number' && typeof prev === 'number'
-              ? (log.removed_filament_counter - prev).toFixed(2)
-              : '';
+          let filamentHours = '';
+          if (typeof log.filament_hours === 'number') {
+            filamentHours = log.filament_hours.toFixed(2);
+          } else if (typeof log.removed_filament_counter === 'number' && typeof prev === 'number') {
+            filamentHours = (log.removed_filament_counter - prev).toFixed(2);
+          }
           return [
             date.toLocaleDateString(),
             date.toLocaleTimeString(),
@@ -972,6 +974,7 @@ function App() {
           'Work Order Title',
           'Work Order Number',
           'Work Order Status',
+          'Description',
           'Attachments'
         ].join(',');
 
@@ -988,6 +991,7 @@ function App() {
             log.workorder_title || '',
             log.workorder_number || '',
             log.workorder_status || '',
+            `"${(log.description || '').replace(/"/g, '""')}"`,
             attachmentUrls
           ].join(',');
         });
