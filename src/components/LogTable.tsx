@@ -102,6 +102,23 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     setIsEditing(showDowntimeModal || editingLog !== null);
   }, [showDowntimeModal, editingLog, setIsEditing]);
 
+  // Fetch engineers and build engineerMap on mount
+  useEffect(() => {
+    async function fetchEngineerMap() {
+      const { data, error } = await supabase
+        .from('engineers')
+        .select('id, name');
+      if (!error && data) {
+        const map: Record<string, string> = {};
+        data.forEach((eng: { id: string; name: string }) => {
+          map[eng.id] = eng.name;
+        });
+        setEngineerMap(map);
+      }
+    }
+    fetchEngineerMap();
+  }, []);
+
   // Regular fetch functions with loading state
   const fetchLogs = async () => {
     try {
@@ -181,49 +198,55 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
       // Add this line:
       const logsWithUrls = await addAttachmentUrlsToLogs(data);
 
-      // Process the results
-      const groupedLogs: ShiftGroup[] = [];
-      let currentGroup: ShiftGroup | null = null;
+      // Apply keyword filter if present
+      let filteredLogs = logsWithUrls;
+      if (searchFilters.keyword && searchFilters.keyword.trim() !== '') {
+        const keyword = searchFilters.keyword.trim().toLowerCase();
+        filteredLogs = filteredLogs.filter(log => {
+          // Concatenate all stringifiable values in the log entry
+          let concat = '';
+          for (const [key, value] of Object.entries(log)) {
+            if (typeof value === 'string' || typeof value === 'number') {
+              concat += ' ' + value.toString();
+            } else if (Array.isArray(value)) {
+              concat += ' ' + value.map(v => v?.toString()).join(' ');
+            }
+          }
+          return concat.toLowerCase().includes(keyword);
+        });
+      }
 
       // Sort data chronologically
-      const sortedData = [...logsWithUrls].sort((a, b) => 
+      const sortedData = [...filteredLogs].sort((a, b) => 
         new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       );
 
-      // Group logs by shift
+      // Group logs by shift (date + shift_type), even when filtering by category
+      const shiftGroupsMap: Record<string, ShiftGroup> = {};
       for (const log of sortedData) {
-        // Skip if category filter is active and doesn't match
-        if (searchFilters.category && 
-            log.category !== searchFilters.category && 
-            log.category !== 'shift') {
+        if (searchFilters.category && log.category !== searchFilters.category) {
           continue;
         }
-
-        if (log.category === 'shift') {
-          if (log.description.includes('shift started')) {
-            // Close previous group if exists
-            if (currentGroup && !currentGroup.endTime) {
-              currentGroup.endTime = log.created_at;
-            }
-            // Start new group
-            currentGroup = {
-              shiftType: log.shift_type,
-              startTime: log.created_at,
-              endTime: null,
-              logs: [log]
-            };
-            groupedLogs.push(currentGroup);
-          } else if (log.description.includes('shift ended') && currentGroup) {
-            if (currentGroup.shiftType === log.shift_type) {
-              currentGroup.endTime = log.created_at;
-              currentGroup.logs.push(log);
-              currentGroup = null;
-            }
-          }
-        } else if (currentGroup) {
-          currentGroup.logs.push(log);
+        const date = new Date(log.created_at);
+        const dateKey = date.toISOString().split('T')[0];
+        const shiftKey = `${dateKey}_${log.shift_type}`;
+        if (!shiftGroupsMap[shiftKey]) {
+          shiftGroupsMap[shiftKey] = {
+            shiftType: log.shift_type,
+            startTime: log.created_at,
+            endTime: null,
+            logs: []
+          };
+        }
+        shiftGroupsMap[shiftKey].logs.push(log);
+        if (!shiftGroupsMap[shiftKey].startTime || new Date(log.created_at) < new Date(shiftGroupsMap[shiftKey].startTime)) {
+          shiftGroupsMap[shiftKey].startTime = log.created_at;
+        }
+        if (!shiftGroupsMap[shiftKey].endTime || new Date(log.created_at) > new Date(shiftGroupsMap[shiftKey].endTime)) {
+          shiftGroupsMap[shiftKey].endTime = log.created_at;
         }
       }
+      const groupedLogs = Object.values(shiftGroupsMap).sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
 
       // Only reverse once here
       const reversedGroups = groupedLogs.reverse();
@@ -1080,32 +1103,47 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
         new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       );
       for (const log of sortedData) {
-        if (searchFilters.category && 
-            log.category !== searchFilters.category && 
-            log.category !== 'shift') {
-          continue;
-        }
-        if (log.category === 'shift') {
-          if (log.description.includes('shift started')) {
-            if (currentGroup && !currentGroup.endTime) {
-              currentGroup.endTime = log.created_at;
-            }
-            currentGroup = {
-              shiftType: log.shift_type,
-              startTime: log.created_at,
-              endTime: null,
-              logs: [log]
-            };
-            groupedLogs.push(currentGroup);
-          } else if (log.description.includes('shift ended') && currentGroup) {
-            if (currentGroup.shiftType === log.shift_type) {
-              currentGroup.endTime = log.created_at;
-              currentGroup.logs.push(log);
-              currentGroup = null;
-            }
+        if (searchFilters.category) {
+          // If filtering by category, only include logs of that category
+          if (log.category !== searchFilters.category) {
+            continue;
           }
-        } else if (currentGroup) {
-          currentGroup.logs.push(log);
+        }
+
+        if (!searchFilters.category) {
+          // Only group by shift if not filtering by category
+          if (log.category === 'shift') {
+            if (log.description.includes('shift started')) {
+              // Close previous group if exists
+              if (currentGroup && !currentGroup.endTime) {
+                currentGroup.endTime = log.created_at;
+              }
+              // Start new group
+              currentGroup = {
+                shiftType: log.shift_type,
+                startTime: log.created_at,
+                endTime: null,
+                logs: [log]
+              };
+              groupedLogs.push(currentGroup);
+            } else if (log.description.includes('shift ended') && currentGroup) {
+              if (currentGroup.shiftType === log.shift_type) {
+                currentGroup.endTime = log.created_at;
+                currentGroup.logs.push(log);
+                currentGroup = null;
+              }
+            }
+          } else if (currentGroup) {
+            currentGroup.logs.push(log);
+          }
+        } else {
+          // If filtering by category, just push as individual groups
+          groupedLogs.push({
+            shiftType: log.shift_type,
+            startTime: log.created_at,
+            endTime: null,
+            logs: [log]
+          });
         }
       }
       const reversedGroups = groupedLogs.reverse();

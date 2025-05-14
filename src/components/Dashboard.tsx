@@ -633,19 +633,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
 
   return (
     <div className="h-screen w-full bg-gradient-to-br from-gray-900 via-gray-950 to-gray-800 flex flex-col">
-      {/* Router/System Status Indicator Bar */}
-      <div className="flex items-center gap-4 px-8 pt-4 pb-2">
-        <div className={`flex items-center gap-2 px-4 py-2 rounded-xl shadow-lg glass-card border-2 border-${getRouterStatus().color}-500/60 animate-fade-in`} title={getRouterStatus().text}>
-          <FaNetworkWired className="text-xl opacity-80" />
-          {getRouterStatus().icon}
-          <span className={`font-semibold text-${getRouterStatus().color}-400`}>{getRouterStatus().text}</span>
-        </div>
-        <div className="flex-1" />
-        {/* Top bar with buttons (remove Hide Graphs) */}
-        <div className="flex gap-2">
-          <button onClick={updateDaysBetweenTodayAndPST} className="px-4 py-2 bg-pink-600 text-white rounded-lg hover:bg-pink-500 flex items-center gap-2 shadow-md transition">Refresh Due Status</button>
-        </div>
-      </div>
       {/* Main area: Work Orders & Downtime Cases side by side */}
       <div className="flex-1 flex flex-col sm:flex-row gap-6 px-4 sm:px-8 pb-2 overflow-hidden">
         {/* Work Orders Box */}
@@ -750,11 +737,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
                           {wo.prefered_start_time && <span className="text-xs text-gray-400 ml-2">{new Date(wo.prefered_start_time).toLocaleString()}</span>}
                         </div>
                       </div>
-                      {/* Quick Actions */}
-                      <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity absolute right-4 top-1/2 -translate-y-1/2">
-                        <button className="p-1 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-xs shadow" title="Mark as Done"><FaCheckCircle /></button>
-                        {/* Add more quick actions as needed */}
-                      </div>
+                      {/* Quick Actions removed as per requirements */}
                     </div>
                   ))}
                 {/* Empty state */}
@@ -866,10 +849,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
                             {c.duration && (<span className="text-xs text-gray-400 ml-2">{Math.floor(c.duration / 60)}h {c.duration % 60}m</span>)}
                           </div>
                         </div>
-                        {/* Quick Actions (future) */}
-                        {/* <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity absolute right-4 top-1/2 -translate-y-1/2">
-                          <button className="p-1 rounded bg-pink-600 hover:bg-pink-700 text-white text-xs shadow" title="Mark as Closed"><FaCheckCircle /></button>
-                        </div> */}
+                        {/* Quick Actions removed as per requirements */}
                       </div>
                     );
                   })}
@@ -1009,6 +989,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
           border-radius: 1.5rem;
           box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.18);
           transition: box-shadow 0.3s cubic-bezier(.4,2,.3,1), transform 0.2s;
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          position: relative;
+          overflow: hidden;
+        }
+        .glass-card::before {
+          content: '';
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0));
+          pointer-events: none;
         }
         .glass-card:hover {
           box-shadow: 0 12px 40px 0 rgba(99, 102, 241, 0.25);
@@ -1028,6 +1021,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
           0% { opacity: 0; transform: scale(0.7); }
           60% { opacity: 1; transform: scale(1.1); }
           100% { opacity: 1; transform: scale(1); }
+        }
+        .bg-red-600 {
+          background-color: #dc2626 !important;
         }
       `}</style>
     </div>

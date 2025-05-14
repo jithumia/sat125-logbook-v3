@@ -480,7 +480,6 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
         return;
       }
       onClose();
-      window.location.reload();
     } catch (error) {
       console.error('Error creating log entry:', error);
       toast.error('Failed to create log entry');
@@ -696,8 +695,8 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
                         <div className="grid grid-cols-3 gap-4">
                           <div>
                             <label className="block text-sm font-medium text-gray-200 mb-1">Work Order Number</label>
-                          <input
-                            type="text"
+                            <input
+                              type="text"
                               value={formState.workorder_number || ''}
                               onChange={e => setFormState({ ...formState, workorder_number: e.target.value })}
                               placeholder="Enter work order number..."
@@ -715,9 +714,9 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
                               className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500"
                               disabled={workorderMode === 'pm'}
                             />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-200 mb-1">Status</label>
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-200 mb-1">Status</label>
                             <div className="flex gap-2 mt-1">
                               {['open', 'in_progress', 'pending', 'closed'].map(status => (
                                 <button

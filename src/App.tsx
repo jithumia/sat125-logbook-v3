@@ -260,6 +260,7 @@ const styles = `
 
 function App() {
   const [session, setSession] = useState<Session | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [currentShift, setCurrentShift] = useState<ShiftType | undefined>(undefined);
   const [showForm, setShowForm] = useState(false);
   const [showStartShift, setShowStartShift] = useState(false);
@@ -1228,8 +1229,14 @@ function App() {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       if (session) fetchActiveShift();
+      setCheckingSession(false);
     });
   }, []);
+
+  if (checkingSession) {
+    // Show a spinner or nothing while checking session
+    return <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-blue-900 to-indigo-900"><LoadingSpinner /></div>;
+  }
 
   if (!session) {
   return (
