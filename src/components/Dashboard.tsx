@@ -16,7 +16,7 @@ import { supabase } from '../lib/supabase';
 import { differenceInDays, format, subDays, subMonths, startOfDay, endOfDay, isWithinInterval, startOfWeek, endOfWeek, startOfMonth, endOfMonth } from 'date-fns';
 import 'chartjs-adapter-date-fns';
 import toast from 'react-hot-toast';
-import { X, Mail, Eye, EyeOff } from 'lucide-react';
+import { X, Mail, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import ShiftReport from './ShiftReport';
 import { ShiftType } from '../types';
 import { FaTasks, FaClock, FaBolt, FaNetworkWired, FaExclamationTriangle, FaCheckCircle } from 'react-icons/fa';
@@ -66,6 +66,7 @@ interface LogEntry {
   prefered_start_time?: string;
   workorder_title?: string;
   workorder_category?: string;
+  downtime_id?: string;
 }
 
 const MAX_RETRIES = 3;
@@ -113,6 +114,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
       created_at: string;
       shift_type: string;
       duration?: number;
+      downtime_id?: string;
     }>,
   });
 
@@ -157,6 +159,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
   // Add state for filter visibility
   const [showWOFilters, setShowWOFilters] = useState(true);
   const [showDTFilters, setShowDTFilters] = useState(true);
+
+  // Add state for due status refresh
+  const [refreshingDue, setRefreshingDue] = useState(false);
 
   const fetchDashboardData = useCallback(async (showLoading = true) => {
     if (!mounted.current) return;
@@ -315,7 +320,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
             description: d.description,
             created_at: d.created_at,
             shift_type: d.shift_type,
-            duration: d.dt_duration
+            duration: d.dt_duration,
+            downtime_id: d.downtime_id
           }))
         });
       }
@@ -558,20 +564,26 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
     });
   };
 
-  // Helper: update days_between_today_and_pst in DB
+  // Helper: update days_between_today_and_pst in DB (batch update)
   const updateDaysBetweenTodayAndPST = async () => {
     const today = new Date();
     today.setHours(0,0,0,0);
-    for (const wo of allWorkorders) {
-      if (!wo.prefered_start_time) continue;
-      const pst = new Date(wo.prefered_start_time);
-      pst.setHours(0,0,0,0);
-      const diff = Math.floor((pst.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-      await supabase
-        .from('workorders')
-        .update({ days_between_today_and_pst: diff })
-        .eq('id', wo.id);
-    }
+    if (!allWorkorders.length) return;
+    // Prepare updates
+    const updates = allWorkorders
+      .map(wo => {
+        if (!wo.prefered_start_time) return null;
+        const pst = new Date(wo.prefered_start_time);
+        pst.setHours(0,0,0,0);
+        const diff = Math.floor((pst.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        return { id: wo.id, days_between_today_and_pst: diff };
+      })
+      .filter((u): u is { id: string; days_between_today_and_pst: number } => u !== null);
+    if (!updates.length) return;
+    // Batch update using Promise.all
+    await Promise.all(updates.map(u =>
+      supabase.from('workorders').update({ days_between_today_and_pst: u.days_between_today_and_pst }).eq('id', u.id)
+    ));
   };
 
   // Helper: isDue (days_between_today_and_pst <= 0 and status is open)
@@ -603,6 +615,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
     pending: filteredWorkorders.filter((w: any) => w.status === 'pending').length,
     closed: filteredWorkorders.filter((w: any) => w.status === 'closed').length
   };
+  // Add due count
+  const dueCount = filteredWorkorders.filter(isDue).length;
 
   // Add a fallback useEffect to always clear loading if any dashboard data is updated but loading is still true
   useEffect(() => {
@@ -678,8 +692,33 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
                 <div>{status.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}</div>
               </div>
             ))}
-            <div className={`px-3 py-1 rounded-lg text-center cursor-pointer select-none font-semibold text-xs transition-all shadow-sm border border-transparent ${showDueOnly ? 'bg-pink-600 text-white border-pink-400' : 'bg-gray-700 text-pink-300 hover:bg-gray-600'}`} onClick={() => { setShowDueOnly((prev) => !prev); setSelectedWOStatus('open'); }} title="Show Due Work Orders">
-              <div className="text-base font-bold">Due</div>
+            {/* Due button styled to match others, with count */}
+            <div className={`px-3 py-1 rounded-lg text-center cursor-pointer select-none font-semibold text-xs transition-all shadow-sm border border-transparent ${showDueOnly ? 'bg-pink-600 text-white border-pink-400' : 'bg-gray-700 text-pink-400 hover:bg-pink-600 hover:text-white'}`} onClick={() => { setShowDueOnly(!showDueOnly); setSelectedWOStatus(null); }} title="Show Due work orders">
+              <div className="text-base font-bold flex items-center justify-center gap-1">
+                <span className="text-pink-400">{dueCount}</span>
+                <button
+                  type="button"
+                  className="ml-1 p-1 rounded-full bg-gray-800 hover:bg-indigo-600 text-indigo-400 hover:text-white transition flex items-center justify-center"
+                  title="Refresh Due Status"
+                  disabled={refreshingDue}
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    setRefreshingDue(true);
+                    try {
+                      await updateDaysBetweenTodayAndPST();
+                      toast.success('Due status updated for all workorders');
+                      // Optionally refetch dashboard data
+                      await fetchDashboardData();
+                    } catch (err) {
+                      toast.error('Failed to update due status');
+                    } finally {
+                      setRefreshingDue(false);
+                    }
+                  }}
+                >
+                  {refreshingDue ? <RefreshCw className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                </button>
+              </div>
               <div>Due</div>
             </div>
           </div>
@@ -820,9 +859,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
             ) : (
               <>
                 {filterDowntimeByDateRange(downtimeSummary.cases)
-                  .filter((c: any) => !selectedDTStatus || c.status === selectedDTStatus)
+                  .filter((c) => !selectedDTStatus || c.status === selectedDTStatus)
                   .map((c, index) => {
-                    // Determine card color and border for status
+                    // Move color/status logic here for each case
                     const isOpen = c.status === 'open';
                     const isInProgress = c.status === 'in_progress';
                     const isPending = c.status === 'pending';
@@ -833,7 +872,15 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
                       <div
                         key={index}
                         className={`p-3 rounded-xl flex flex-row items-center gap-4 cursor-pointer hover:bg-pink-700/30 transition-colors border-l-4 shadow-md group relative ${borderColor} ${bgColor}`}
-                        onClick={() => { if (onEntryClick) { const date = new Date(c.created_at).toISOString().split('T')[0]; onEntryClick(date, c.shift_type); } }}
+                        onClick={() => {
+                          if (c.downtime_id) {
+                            const link = `https://goiba.lightning.force.com/lightning/r/Case/${c.downtime_id}/view`;
+                            window.open(link, '_blank');
+                          } else if (onEntryClick) {
+                            const date = new Date(c.created_at).toISOString().split('T')[0];
+                            onEntryClick(date, c.shift_type);
+                          }
+                        }}
                         title="Click to view downtime details"
                       >
                         {/* Status Icon */}
@@ -852,7 +899,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onEntryClick, visible = true }) =
                         {/* Quick Actions removed as per requirements */}
                       </div>
                     );
-                  })}
+                  })
+                }
                 {/* Empty state */}
                 {filterDowntimeByDateRange(downtimeSummary.cases).filter((c: any) => !selectedDTStatus || c.status === selectedDTStatus).length === 0 && (
                   <div className="flex flex-col items-center justify-center h-full text-gray-400 animate-fade-in">

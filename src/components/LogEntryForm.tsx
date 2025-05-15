@@ -67,6 +67,7 @@ interface FormState {
   workorder_id: string;
   prefered_start_time: string;
   location: string;
+  downtime_id?: string;
 }
 
 type EngineerListItem = {
@@ -107,6 +108,7 @@ const initialState: FormState = {
   workorder_id: '',
   prefered_start_time: '',
   location: '',
+  downtime_id: undefined,
 };
 
 const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => {
@@ -365,6 +367,7 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
         dt_end_time: category === 'downtime' ? dt_end_time : null,
         dt_duration: category === 'downtime' ? dt_duration : null,
         user_id: session.user.id,
+        downtime_id: category === 'downtime' ? formState.downtime_id : null,
       };
 
       // 2. Insert the log entry and get the new ID
@@ -607,6 +610,18 @@ const LogEntryForm: React.FC<LogEntryFormProps> = ({ onClose, activeShift }) => 
                             placeholder="Enter case number..."
                             className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500"
                           />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-200 mb-1">Downtime ID *</label>
+                          <input
+                            type="text"
+                            value={formState.downtime_id || ''}
+                            onChange={e => setFormState({ ...formState, downtime_id: e.target.value })}
+                            placeholder="Enter downtime ID..."
+                            className={`w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 ${validationErrors.downtime_id ? 'border-red-500' : ''}`}
+                            required={formState.category === 'downtime'}
+                          />
+                          {validationErrors.downtime_id && <p className="text-xs text-red-400 mt-1">Downtime ID is required</p>}
                         </div>
 
                         <div className="grid grid-cols-2 gap-4">

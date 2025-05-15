@@ -17,6 +17,7 @@ import { supabase } from './lib/supabase';
 import toast from 'react-hot-toast';
 import { Session } from '@supabase/supabase-js';
 import Dashboard from './components/Dashboard';
+import { Dialog } from '@headlessui/react';
 
 interface AccessRequest {
   id: string;
@@ -292,6 +293,9 @@ function App() {
   const [isEditing, setIsEditing] = useState(false);
   const [closedShifts, setClosedShifts] = useState<ShiftGroup[]>([]);
   const [loadingShifts, setLoadingShifts] = useState(false);
+  const [dbStatus, setDbStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [dbError, setDbError] = useState<string | null>(null);
+  const [showAdminTools, setShowAdminTools] = useState(false);
 
   // Add array of emojis for random selection
   const refreshEmojis = ["🔄", "✨", "🚀", "💫", "🎯", "🌟", "⚡️", "🔮"];
@@ -333,12 +337,12 @@ function App() {
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_IN') {
-        setSession(session);
+          setSession(session);
         fetchActiveShift();
       }
       if (event === 'SIGNED_OUT') {
-        setSession(null);
-      }
+          setSession(null);
+        }
     });
     return () => {
       subscription.unsubscribe();
@@ -405,7 +409,7 @@ function App() {
       if (error) throw error;
       setRecentLogs(data || []);
     } catch (error) {
-      toast.error('Failed to fetch recent logs');
+        toast.error('Failed to fetch recent logs');
     }
   };
 
@@ -1228,14 +1232,51 @@ function App() {
     fetchClosedShifts();
   };
 
-  // On initial load and after login, always call fetchActiveShift before rendering main UI
+  // Helper to fetch all core data and show status
+  const fetchAllCoreData = async () => {
+    setDbStatus('loading');
+    setDbError(null);
+    try {
+      await fetchActiveShift();
+      await fetchRecentLogs();
+      setDbStatus('success');
+      toast.success('Database fetch completed.');
+    } catch (err) {
+      setDbStatus('error');
+      setDbError('Database fetch failed. Please retry.');
+      toast.error('Database fetch failed. Please retry.');
+    }
+  };
+
+  // On initial load and after login, always call fetchAllCoreData
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      if (session) fetchActiveShift();
+      if (session) fetchAllCoreData();
       setCheckingSession(false);
     });
   }, []);
+
+  // Admin tool: delete all shift_engineers then active_shifts
+  const handleAdminCleanup = async () => {
+    if (!window.confirm('Are you sure you want to delete all active shift and shift engineer data? This cannot be undone.')) return;
+    try {
+      setDbStatus('loading');
+      // Delete shift_engineers first
+      const { error: seError } = await supabase.from('shift_engineers').delete().neq('id', '');
+      if (seError) throw seError;
+      // Then delete active_shifts
+      const { error: asError } = await supabase.from('active_shifts').delete().neq('id', '');
+      if (asError) throw asError;
+      setDbStatus('success');
+      toast.success('All active shift and shift engineer data deleted.');
+      fetchAllCoreData();
+    } catch (err) {
+      setDbStatus('error');
+      setDbError('Admin cleanup failed. Please retry.');
+      toast.error('Admin cleanup failed. Please retry.');
+    }
+  };
 
   if (checkingSession) {
     // Show a spinner or nothing while checking session
@@ -1261,14 +1302,14 @@ function App() {
             <div className="mb-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-semibold text-white">Welcome Back</h2>
-                <button
-                    onClick={() => setShowSignupRequest(true)}
-                    className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
-                >
-                    Request Access
-                </button>
-                </div>
-                <p className="text-sm text-gray-400">Please sign in to continue to the logbook system.</p>
+              <button
+                  onClick={() => setShowSignupRequest(true)}
+                  className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
+              >
+                  Request Access
+              </button>
+              </div>
+              <p className="text-sm text-gray-400">Please sign in to continue to the logbook system.</p>
             </div>
             {authComponent}
           </div>
@@ -1358,6 +1399,25 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-indigo-900">
+      {/* DB status banners */}
+      {dbStatus === 'loading' && (
+        <div className="fixed top-0 left-0 w-full bg-blue-900 text-white text-center py-2 z-50">Fetching data from database...</div>
+      )}
+      {dbStatus === 'error' && (
+        <div className="fixed top-0 left-0 w-full bg-red-900 text-white text-center py-2 z-50">
+          {dbError} <button onClick={fetchAllCoreData} className="underline ml-2">Retry</button>
+        </div>
+      )}
+      {/* Admin cleanup button */}
+      {isAdmin && (
+        <button
+          className="fixed bottom-4 right-4 bg-red-700 text-white px-4 py-2 rounded shadow-lg z-50 hover:bg-red-800"
+          onClick={handleAdminCleanup}
+          title="Admin: Delete all active shift and shift engineer data"
+        >
+          Admin Cleanup: Delete Active Shift Data
+        </button>
+      )}
       <div className={`${isSidebarOpen ? 'ml-64' : 'ml-16'} transition-all duration-300 ease-in-out min-h-screen flex flex-col`}>
         {showDashboard ? (
           <Dashboard onEntryClick={handleDashboardEntryClick} />
@@ -1803,10 +1863,10 @@ function App() {
             setShowForm(false);
             reloadAllData();
           }}
-          activeShift={activeShift}
-        />
-      )}
-      {showReportModal && (
+            activeShift={activeShift}
+          />
+        )}
+        {showReportModal && (
         <ShiftReport
           isOpen={showReportModal}
           onClose={() => {

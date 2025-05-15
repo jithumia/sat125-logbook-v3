@@ -3,7 +3,7 @@ import { Dialog, Transition } from '@headlessui/react';
 import { Fragment } from 'react';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
-import { X } from 'lucide-react';
+import { X, Calendar, Clock } from 'lucide-react';
 import { differenceInMinutes } from 'date-fns';
 import { DateTimeInput } from './DateTimeInput';
 import { LogEntry } from '../types';
@@ -103,37 +103,69 @@ const UpdateDowntimeForm: React.FC<UpdateDowntimeFormProps> = ({ entry, onClose,
 
                 <form onSubmit={handleSubmit} className="space-y-6">
                   <div>
-                    <label className="block text-sm font-medium text-gray-200 mb-1">
+                    <label className="block text-sm font-medium text-gray-200 mb-1" htmlFor="dt-start-time">
                       DT Start Time *
                     </label>
-                    <DateTimeInput
-                      value={startTime}
-                      onChange={(value) => {
-                        setStartTime(value);
-                        if (endTime) {
-                          setDuration(calculateDuration(value, endTime));
-                        }
-                      }}
-                      className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500"
-                    />
+                    <div className="relative flex items-center gap-2">
+                      <DateTimeInput
+                        value={startTime}
+                        onChange={(value) => {
+                          setStartTime(value);
+                          if (endTime) {
+                            setDuration(calculateDuration(value, endTime));
+                          }
+                        }}
+                        className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 pr-10"
+                        id="dt-start-time"
+                      />
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        aria-label="Open date/time picker for start time"
+                        className="absolute right-2 text-gray-400 hover:text-indigo-400 focus:outline-none"
+                        onClick={() => {
+                          const input = document.getElementById('dt-start-time');
+                          if (input) (input as HTMLInputElement).focus();
+                        }}
+                      >
+                        <Calendar className="h-5 w-5" />
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1">You can type or pick a date and time.</p>
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-200 mb-1">
+                    <label className="block text-sm font-medium text-gray-200 mb-1" htmlFor="dt-end-time">
                       DT End Time (Optional)
                     </label>
-                    <DateTimeInput
-                      value={endTime || undefined}
-                      onChange={(value) => {
-                        setEndTime(value);
-                        if (value && startTime) {
-                          setDuration(calculateDuration(startTime, value));
-                        } else {
-                          setDuration(null);
-                        }
-                      }}
-                      className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500"
-                    />
+                    <div className="relative flex items-center gap-2">
+                      <DateTimeInput
+                        value={endTime || undefined}
+                        onChange={(value) => {
+                          setEndTime(value);
+                          if (value && startTime) {
+                            setDuration(calculateDuration(startTime, value));
+                          } else {
+                            setDuration(null);
+                          }
+                        }}
+                        className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 pr-10"
+                        id="dt-end-time"
+                      />
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        aria-label="Open date/time picker for end time"
+                        className="absolute right-2 text-gray-400 hover:text-indigo-400 focus:outline-none"
+                        onClick={() => {
+                          const input = document.getElementById('dt-end-time');
+                          if (input) (input as HTMLInputElement).focus();
+                        }}
+                      >
+                        <Clock className="h-5 w-5" />
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1">You can type or pick a date and time.</p>
                   </div>
 
                   <div>

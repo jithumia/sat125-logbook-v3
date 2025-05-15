@@ -93,8 +93,8 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
 
   useEffect(() => {
     setLoading(true);
-    fetchLogs();
-    fetchCriticalEvents();
+            fetchLogs();
+            fetchCriticalEvents();
   }, [showAllLogs, activeShift, searchFilters]);
 
   useEffect(() => {
@@ -232,21 +232,21 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
           // Start a new shift group
           if (currentGroup && currentGroup.logs.length > 0) {
             groupedLogs.push(currentGroup);
-          }
-          currentGroup = {
-            shiftType: log.shift_type,
-            startTime: log.created_at,
-            endTime: null,
-            logs: [log]
-          };
+            }
+            currentGroup = {
+              shiftType: log.shift_type,
+              startTime: log.created_at,
+              endTime: null,
+              logs: [log]
+            };
         } else if (log.category === 'shift' && log.description && log.description.toLowerCase().includes('shift ended')) {
           // End the current shift group
           if (currentGroup) {
-            currentGroup.endTime = log.created_at;
-            currentGroup.logs.push(log);
+              currentGroup.endTime = log.created_at;
+              currentGroup.logs.push(log);
             groupedLogs.push(currentGroup);
-            currentGroup = null;
-          }
+              currentGroup = null;
+            }
         } else {
           if (!currentGroup) {
             // If no shift group is open, start a generic group (for orphan logs)
@@ -267,10 +267,10 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
       // Sort by startTime descending
       groupedLogs.sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
 
-      // Only reverse once here
-      const reversedGroups = groupedLogs.reverse();
-      setRawLogs(reversedGroups);
-      setLogs(reversedGroups);
+      // Only reverse for Current Shift Logs, not All Logs
+      const finalGroups = showAllLogs ? groupedLogs : groupedLogs.reverse();
+      setRawLogs(finalGroups);
+      setLogs(finalGroups);
     } catch (error) {
       console.error('Error in fetchLogs:', error);
       toast.error('Failed to fetch logs. Please try again.');
@@ -907,6 +907,21 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
     };
   }, []);
 
+  // Helper: Convert UTC ISO string to local datetime-local string (YYYY-MM-DDTHH:mm)
+  function toLocalDateTimeValue(isoString: string | null | undefined) {
+    if (!isoString) return '';
+    const date = new Date(isoString);
+    const tzOffset = date.getTimezoneOffset() * 60000;
+    const local = new Date(date.getTime() - tzOffset);
+    return local.toISOString().slice(0, 16);
+  }
+  // Helper: Convert local datetime-local string to UTC ISO string
+  function fromLocalDateTimeValue(localValue: string) {
+    if (!localValue) return '';
+    const local = new Date(localValue);
+    return new Date(local.getTime() - local.getTimezoneOffset() * 60000).toISOString();
+  }
+
   // Add the modal component
   const DowntimeModal = () => {
     if (!editingDowntime || !showDowntimeModal) return null;
@@ -958,20 +973,59 @@ const LogTable: React.FC<LogTableProps> = ({ showAllLogs, searchFilters, activeS
 
           <div className="space-y-6">
             <div>
-              <DateTimePicker
-                label="Start Time"
-                value={timeState.startTime}
-                onChange={(value) => handleTimeChange('startTime', value)}
-                required
-              />
+              <label className="block text-sm font-medium text-gray-200 mb-1" htmlFor="dt-modal-start-time">
+                Start Time *
+              </label>
+              <div className="relative flex items-center gap-2">
+                <input
+                  type="datetime-local"
+                  value={toLocalDateTimeValue(timeState.startTime)}
+                  onChange={e => handleTimeChange('startTime', fromLocalDateTimeValue(e.target.value))}
+                  className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 pr-10"
+                  id="dt-modal-start-time"
+                />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  aria-label="Open date/time picker for start time"
+                  className="absolute right-2 text-gray-400 hover:text-indigo-400 focus:outline-none"
+                  onClick={() => {
+                    const input = document.getElementById('dt-modal-start-time');
+                    if (input) (input as HTMLInputElement).focus();
+                  }}
+                >
+                  <Calendar className="h-5 w-5" />
+                </button>
+              </div>
+              <p className="text-xs text-gray-400 mt-1">You can type or pick a date and time.</p>
             </div>
 
             <div>
-              <DateTimePicker
-                label="End Time"
-                value={timeState.endTime || new Date().toISOString()}
-                onChange={(value) => handleTimeChange('endTime', value)}
-              />
+              <label className="block text-sm font-medium text-gray-200 mb-1" htmlFor="dt-modal-end-time">
+                End Time (Optional)
+              </label>
+              <div className="relative flex items-center gap-2">
+                <input
+                  type="datetime-local"
+                  value={toLocalDateTimeValue(timeState.endTime)}
+                  onChange={e => handleTimeChange('endTime', fromLocalDateTimeValue(e.target.value))}
+                  className="w-full rounded-lg bg-white/5 border-0 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 pr-10"
+                  id="dt-modal-end-time"
+                />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  aria-label="Open date/time picker for end time"
+                  className="absolute right-2 text-gray-400 hover:text-indigo-400 focus:outline-none"
+                  onClick={() => {
+                    const input = document.getElementById('dt-modal-end-time');
+                    if (input) (input as HTMLInputElement).focus();
+                  }}
+                >
+                  <Clock className="h-5 w-5" />
+                </button>
+              </div>
+              <p className="text-xs text-gray-400 mt-1">You can type or pick a date and time.</p>
             </div>
           </div>
 

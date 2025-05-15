@@ -67,6 +67,26 @@ const StartShiftModal: React.FC<StartShiftModalProps> = ({ onClose, onSuccess })
       return;
     }
 
+    // DB check: fetch active_shifts before starting
+    try {
+      setSubmitting(true);
+      const { data: activeShifts, error: activeError } = await supabase
+        .from('active_shifts')
+        .select('*')
+        .order('started_at', { ascending: false })
+        .limit(1);
+      if (activeError) throw activeError;
+      if (activeShifts && activeShifts.length > 0) {
+        toast.error('Another shift is already active. Please reload.');
+        setSubmitting(false);
+        return;
+      }
+    } catch (err) {
+      toast.error('Database fetch error. Please retry.');
+      setSubmitting(false);
+      return;
+    }
+
     try {
       setSubmitting(true);
 

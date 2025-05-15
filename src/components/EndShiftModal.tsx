@@ -28,6 +28,27 @@ const EndShiftModal: React.FC<EndShiftModalProps> = ({ onClose, onSuccess, activ
       return;
     }
 
+    // DB check: fetch active_shifts by id before ending
+    try {
+      setLoading(true);
+      const { data: dbActiveShift, error: dbError } = await supabase
+        .from('active_shifts')
+        .select('*')
+        .eq('id', activeShift.id)
+        .single();
+      if (dbError) throw dbError;
+      if (!dbActiveShift) {
+        toast.error('Active shift not found in database. Please reload.');
+        setLoading(false);
+        onClose();
+        return;
+      }
+    } catch (err) {
+      toast.error('Database fetch error. Please retry.');
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
 
