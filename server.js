@@ -29,6 +29,6 @@ app.post('/send_shift_report', async (req, res) => {
 });
 
 const PORT = 5000;
-app.listen(PORT, () => {
-  console.log(`Email backend listening on port ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Email backend listening on port ${PORT} (all interfaces)`);
 }); 
